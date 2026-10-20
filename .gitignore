@@ -1,0 +1,14 @@
+/vendor
+/node_modules
+.env
+.env.*
+!.env.example
+.phpunit.result.cache
+/storage/logs/*
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/bootstrap/cache/*
+!.gitkeep
+.DS_Store
+/storage/api-docs/*

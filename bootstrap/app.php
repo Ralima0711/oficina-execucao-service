@@ -1,0 +1,23 @@
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: __DIR__.'/../routes/api.php',
+    )
+    ->withMiddleware(function (Middleware $middleware) {
+        // Correlação de requisições + span de tracing em todas as rotas da API.
+        $middleware->api(prepend: [
+            \App\Interface\Http\Middleware\CorrelacaoRequisicaoMiddleware::class,
+        ]);
+    })
+    ->withExceptions(function (Exceptions $exceptions) {
+        // Garante respostas JSON para todas as rotas da API, mesmo sem Accept header.
+        $exceptions->shouldRenderJsonWhen(function (Request $request) {
+            return $request->is('api/*') || $request->expectsJson();
+        });
+    })->create();

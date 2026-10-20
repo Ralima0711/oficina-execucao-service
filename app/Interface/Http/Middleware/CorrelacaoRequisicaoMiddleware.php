@@ -1,0 +1,161 @@
+<?php
+
+namespace App\Interface\Http\Middleware;
+
+use App\Infrastructure\Messaging\TraceContextCarrier;
+use App\Infrastructure\Observability\OpenTelemetryProvider;
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\API\Trace\SpanKind;
+use OpenTelemetry\API\Trace\StatusCode;
+use OpenTelemetry\Context\ScopeInterface;
+use Symfony\Component\HttpFoundation\Response;
+
+/**
+ * CAMADA DE INTERFACE — Middleware
+ *
+ * Correlação de requisições e tracing (template dos 3 serviços):
+ *  - garante um X-Request-Id por requisição (reaproveita o recebido ou gera um novo);
+ *  - abre um span de servidor por request (OpenTelemetry), quando o SDK está ativo,
+ *    como filho do `traceparent` recebido — assim uma chamada REST entre serviços
+ *    continua no mesmo trace;
+ *  - injeta request.id, service.name, trace.id e span.id no contexto de todos os logs
+ *    da requisição, permitindo o "logs in context" (clique do log direto para o trace);
+ *  - devolve o X-Request-Id no header da resposta.
+ */
+class CorrelacaoRequisicaoMiddleware
+{
+    public const HEADER = 'X-Request-Id';
+
+    /** Escopo do span de request enquanto ele estiver corrente. */
+    private ?ScopeInterface $escopo = null;
+
+    public function handle(Request $request, Closure $next): Response
+    {
+        $requestId = $this->resolverRequestId($request);
+        $request->attributes->set('request_id', $requestId);
+
+        $span = $this->iniciarSpan($request);
+
+        $contexto = [
+            'request.id'   => $requestId,
+            'service.name' => OpenTelemetryProvider::nomeServico(),
+            'http.method'  => $request->method(),
+            'http.route'   => $request->path(),
+        ];
+
+        $spanContext = $span?->getContext();
+        if ($spanContext !== null && $spanContext->isValid()) {
+            $contexto['trace.id'] = $spanContext->getTraceId();
+            $contexto['span.id']  = $spanContext->getSpanId();
+        }
+
+        Log::withContext($contexto);
+
+        $inicio = microtime(true);
+
+        try {
+            $response = $next($request);
+        } catch (\Throwable $e) {
+            $span?->recordException($e);
+            $span?->setStatus(StatusCode::STATUS_ERROR, $e->getMessage());
+            $this->desativarSpan();
+            $span?->end();
+
+            throw $e;
+        }
+
+        $duracaoMs = round((microtime(true) - $inicio) * 1000, 2);
+
+        $span?->setAttribute('http.status_code', $response->getStatusCode());
+        $span?->setAttribute('http.duration_ms', $duracaoMs);
+
+        if ($response->getStatusCode() >= 500) {
+            $span?->setStatus(StatusCode::STATUS_ERROR);
+        }
+
+        $this->desativarSpan();
+        $span?->end();
+
+        $response->headers->set(self::HEADER, $requestId);
+
+        // Log estruturado de acesso — base para latência, alertas e dashboards.
+        Log::info('requisicao_processada', [
+            'http.status_code' => $response->getStatusCode(),
+            'http.duration_ms' => $duracaoMs,
+        ]);
+
+        return $response;
+    }
+
+    private function resolverRequestId(Request $request): string
+    {
+        $recebido = $request->header(self::HEADER);
+
+        if (is_string($recebido) && trim($recebido) !== '') {
+            return trim($recebido);
+        }
+
+        return (string) Str::uuid();
+    }
+
+    /**
+     * Envia a fila de spans depois que a resposta já foi entregue ao cliente.
+     * Sem isto o BatchSpanProcessor pode morrer com o processo sem exportar nada.
+     */
+    public function terminate(Request $request, Response $response): void
+    {
+        OpenTelemetryProvider::flush();
+    }
+
+    /**
+     * Abre o span de servidor do request. Se o SDK do OpenTelemetry não estiver
+     * instalado/ativo, devolve null e a requisição segue sem tracing.
+     */
+    private function iniciarSpan(Request $request): ?\OpenTelemetry\API\Trace\SpanInterface
+    {
+        if (!class_exists(Span::class)) {
+            return null;
+        }
+
+        // Usa o padrão da rota (ordens-servico/{id}) em vez do caminho concreto,
+        // para não criar uma operação diferente por id no APM.
+        $rota = $request->route()?->uri() ?? $request->path();
+
+        // Pai = traceparent recebido. Ausente ou inválido, o extract devolve a
+        // raiz e o span abre um trace novo.
+        $pai = TraceContextCarrier::extract([
+            TraceContextCarrier::TRACEPARENT => $request->header(TraceContextCarrier::TRACEPARENT),
+            TraceContextCarrier::TRACESTATE  => $request->header(TraceContextCarrier::TRACESTATE),
+        ]);
+
+        $span = OpenTelemetryProvider::tracer()
+            ->spanBuilder(sprintf('%s /%s', $request->method(), ltrim($rota, '/')))
+            ->setSpanKind(SpanKind::KIND_SERVER)
+            ->setParent($pai)
+            ->setAttribute('http.method', $request->method())
+            ->setAttribute('http.route', $rota)
+            ->setAttribute('http.target', $request->getRequestUri())
+            ->startSpan();
+
+        // Torna o span de request corrente: sem isto os spans de negócio
+        // (Tracing::iniciar) nascem como raiz, em outro trace.
+        $this->escopo = $span->activate();
+
+        return $span;
+    }
+
+    /**
+     * Desfaz a ativação do span de request — o SDK alerta se o escopo ficar aberto.
+     */
+    private function desativarSpan(): void
+    {
+        if ($this->escopo instanceof ScopeInterface) {
+            $this->escopo->detach();
+            $this->escopo = null;
+        }
+    }
+}
