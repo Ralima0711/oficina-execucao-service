@@ -1,0 +1,72 @@
+services:
+  app:
+    build: .
+    container_name: execucao_app
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      LOG_CHANNEL: stdout_json
+      LOG_LEVEL: info
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DATABASE: execucao
+      REDIS_CLIENT: predis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PREFIX: ""
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      OTEL_SERVICE_NAME: oficina-execucao-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+    ports:
+      - "${APP_PORT:-8080}:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - execucao_network
+
+  mongo:
+    image: mongo:7
+    container_name: execucao_mongo
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - execucao_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: execucao_redis
+    # AOF ligado: a fila de execução sobrevive a restart do Redis.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - execucao_network
+
+networks:
+  execucao_network:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  redis_data:
