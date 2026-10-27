@@ -2,6 +2,8 @@ services:
   app:
     build: .
     container_name: execucao_app
+    # Cria os índices do Mongo (idempotente) e sobe a API.
+    command: sh -c "php artisan execucao:criar-indices && php artisan serve --host=0.0.0.0 --port=8000"
     environment:
       APP_ENV: local
       APP_DEBUG: "true"
@@ -15,6 +17,8 @@ services:
       REDIS_PREFIX: ""
       CACHE_STORE: array
       SESSION_DRIVER: array
+      L5_SWAGGER_GENERATE_ALWAYS: "true"
+      L5_SWAGGER_CONST_HOST: http://localhost:${APP_PORT:-8080}
       OTEL_SERVICE_NAME: oficina-execucao-service
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
