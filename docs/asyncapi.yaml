@@ -1,0 +1,339 @@
+asyncapi: 3.0.0
+
+info:
+  title: Oficina Mecanica — API Assincrona da Saga
+  version: 1.0.0
+  description: |
+    Contrato dos eventos e comandos trocados entre os tres microsservicos
+    do Tech Challenge SOAT Fase 4 (Grupo 77).
+
+    Complementa o Swagger de cada servico: o Swagger documenta as rotas
+    sincronas, este documento descreve o que trafega pelo RabbitMQ.
+
+    Fonte da verdade: docs/contrato-eventos-fase4.md, versao 1.0.
+  contact:
+    name: Grupo 77 — FIAP SOAT Pos-Tech
+
+defaultContentType: application/json
+
+servers:
+  local:
+    host: localhost:5672
+    protocol: amqp
+    description: RabbitMQ do docker-compose de desenvolvimento
+  cluster:
+    host: rabbitmq.oficina.svc.cluster.local:5672
+    protocol: amqp
+    description: RabbitMQ no cluster Kubernetes
+
+channels:
+
+  # ----------------------------------------------------- comandos (point-to-point)
+  gerarOrcamento:
+    address: billing.gerar-orcamento
+    description: Comando do orquestrador para o Billing gerar o orcamento da OS.
+    messages:
+      GerarOrcamento:
+        $ref: '#/components/messages/GerarOrcamento'
+
+  cobrarPagamento:
+    address: billing.cobrar-pagamento
+    description: Comando do orquestrador para o Billing cobrar o valor aprovado.
+    messages:
+      CobrarPagamento:
+        $ref: '#/components/messages/CobrarPagamento'
+
+  anularOrcamento:
+    address: billing.anular-orcamento
+    description: Compensacao. Anula um orcamento ja gerado.
+    messages:
+      Compensacao:
+        $ref: '#/components/messages/Compensacao'
+
+  estornarPagamento:
+    address: billing.estornar-pagamento
+    description: Compensacao. Estorna um pagamento confirmado.
+    messages:
+      Compensacao:
+        $ref: '#/components/messages/Compensacao'
+
+  enviarParaExecucao:
+    address: execucao.enviar-para-execucao
+    description: Comando do orquestrador para a Execucao enfileirar a OS.
+    messages:
+      EnviarParaExecucao:
+        $ref: '#/components/messages/EnviarParaExecucao'
+
+  cancelarExecucao:
+    address: execucao.cancelar-execucao
+    description: Compensacao. Retira a OS da fila de execucao.
+    messages:
+      Compensacao:
+        $ref: '#/components/messages/Compensacao'
+
+  # ------------------------------------------------- eventos (publish-subscribe)
+  eventosDeDominio:
+    address: oficina.eventos
+    description: |
+      Exchange topic com os eventos de dominio dos tres servicos.
+      O orquestrador escuta orcamento.*, pagamento.*, execucao.* e aprovacao.*;
+      o read model do OS escuta os.*.
+    messages:
+      orcamentoGerado:
+        $ref: '#/components/messages/OrcamentoGerado'
+      orcamentoDecidido:
+        $ref: '#/components/messages/OrcamentoDecidido'
+      aprovacaoExpirada:
+        $ref: '#/components/messages/AprovacaoExpirada'
+      pagamentoResolvido:
+        $ref: '#/components/messages/PagamentoResolvido'
+      execucaoAtualizada:
+        $ref: '#/components/messages/ExecucaoAtualizada'
+
+operations:
+
+  enviarGerarOrcamento:
+    action: send
+    channel: { $ref: '#/channels/gerarOrcamento' }
+    summary: O orquestrador (OS Service) pede o orcamento.
+
+  receberGerarOrcamento:
+    action: receive
+    channel: { $ref: '#/channels/gerarOrcamento' }
+    summary: O Billing consome e gera o orcamento.
+
+  enviarCobrarPagamento:
+    action: send
+    channel: { $ref: '#/channels/cobrarPagamento' }
+    summary: O orquestrador pede a cobranca apos a aprovacao do cliente.
+
+  enviarParaExecucao:
+    action: send
+    channel: { $ref: '#/channels/enviarParaExecucao' }
+    summary: O orquestrador envia a OS para a fila de execucao, apos o pagamento.
+
+  publicarEventos:
+    action: send
+    channel: { $ref: '#/channels/eventosDeDominio' }
+    summary: Billing e Execucao publicam os eventos de dominio.
+
+  consumirEventos:
+    action: receive
+    channel: { $ref: '#/channels/eventosDeDominio' }
+    summary: O orquestrador avanca a saga; o read model do OS projeta o historico.
+
+components:
+
+  messageTraits:
+    envelope:
+      headers:
+        type: object
+        required: [messageId, sagaId, type, occurredAt, version]
+        properties:
+          messageId:
+            type: string
+            format: uuid
+            description: Chave de idempotencia. O consumidor descarta o que ja processou.
+          sagaId:
+            type: string
+            format: uuid
+            description: Correlaciona todos os passos da mesma saga.
+          causationId:
+            type: string
+            format: uuid
+            description: messageId da mensagem que causou esta.
+          type:
+            type: string
+            description: Nome do comando ou evento.
+          occurredAt:
+            type: string
+            format: date-time
+          traceparent:
+            type: string
+            description: Contexto W3C do OpenTelemetry, propagado explicitamente.
+          version:
+            type: integer
+            minimum: 1
+
+  messages:
+
+    GerarOrcamento:
+      name: GerarOrcamento
+      title: Gerar orcamento
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, clienteId, veiculo, descricaoProblema]
+        properties:
+          osId: { type: string, format: uuid }
+          clienteId: { type: string, format: uuid }
+          veiculo:
+            type: object
+            required: [placa]
+            properties:
+              placa: { type: string }
+              modelo: { type: string }
+              ano: { type: integer }
+          descricaoProblema: { type: string }
+          itensDiagnosticados:
+            type: array
+            items: { $ref: '#/components/schemas/ItemDiagnosticado' }
+
+    OrcamentoGerado:
+      name: OrcamentoGerado
+      title: Orcamento gerado
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, orcamentoId, valorTotal, moeda, validoAte]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          valorTotal: { type: number, format: double }
+          moeda: { type: string, enum: [BRL] }
+          validoAte:
+            type: string
+            format: date-time
+            description: Sete dias apos a geracao. Expirar cancela a OS.
+          itens:
+            type: array
+            items: { $ref: '#/components/schemas/ItemOrcado' }
+
+    OrcamentoDecidido:
+      name: OrcamentoDecidido
+      title: Orcamento aprovado ou recusado pelo cliente
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, orcamentoId, decidioEm]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          decidioEm: { type: string, format: date-time }
+          motivo:
+            type: string
+            description: Preenchido apenas na recusa.
+
+    AprovacaoExpirada:
+      name: AprovacaoExpirada
+      title: Prazo de aprovacao vencido
+      description: |
+        Publicado quando a mensagem expira por TTL na fila
+        billing.aguardando-aprovacao. Nao existe job agendado.
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, orcamentoId]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          expirouEm: { type: string, format: date-time }
+
+    CobrarPagamento:
+      name: CobrarPagamento
+      title: Cobrar o valor aprovado
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, orcamentoId, valorTotal, moeda]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          valorTotal: { type: number, format: double }
+          moeda: { type: string, enum: [BRL] }
+
+    PagamentoResolvido:
+      name: PagamentoResolvido
+      title: Pagamento confirmado ou recusado
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, pagamentoId, orcamentoId]
+        properties:
+          osId: { type: string, format: uuid }
+          pagamentoId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          valorPago: { type: number, format: double }
+          metodo: { type: string, enum: [pix, credito, debito, boleto] }
+          confirmadoEm: { type: string, format: date-time }
+          motivo:
+            type: string
+            description: Preenchido apenas na recusa.
+
+    EnviarParaExecucao:
+      name: EnviarParaExecucao
+      title: Enfileirar a OS para execucao
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, orcamentoId]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          prioridade: { type: integer, default: 1 }
+          itens:
+            type: array
+            items: { $ref: '#/components/schemas/ItemDiagnosticado' }
+
+    ExecucaoAtualizada:
+      name: ExecucaoAtualizada
+      title: Execucao iniciada, concluida ou falhou
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, execucaoId]
+        properties:
+          osId: { type: string, format: uuid }
+          execucaoId: { type: string, format: uuid }
+          mecanicoId: { type: string, format: uuid }
+          iniciadaEm: { type: string, format: date-time }
+          concluidaEm: { type: string, format: date-time }
+          motivo:
+            type: string
+            description: Preenchido apenas na falha.
+
+    Compensacao:
+      name: Compensacao
+      title: Comando de compensacao
+      description: Formato comum a AnularOrcamento, EstornarPagamento e CancelarExecucao.
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, motivo]
+        properties:
+          osId: { type: string, format: uuid }
+          orcamentoId: { type: string, format: uuid }
+          pagamentoId: { type: string, format: uuid }
+          motivo:
+            type: string
+            enum:
+              - pagamento_recusado
+              - aprovacao_expirada
+              - execucao_falhou
+              - cancelado_pelo_cliente
+
+  schemas:
+    ItemDiagnosticado:
+      type: object
+      required: [descricao, tipo, quantidade]
+      properties:
+        descricao: { type: string }
+        tipo: { type: string, enum: [peca, servico] }
+        quantidade: { type: integer, minimum: 1 }
+
+    ItemOrcado:
+      allOf:
+        - $ref: '#/components/schemas/ItemDiagnosticado'
+        - type: object
+          required: [valorUnitario]
+          properties:
+            valorUnitario: { type: number, format: double }
