@@ -53,6 +53,46 @@ class Tracing
         return $span;
     }
 
+    /**
+     * Roda $operacao dentro de um span (sucesso, erro e encerramento incluídos).
+     *
+     * @template T
+     *
+     * @param callable(): T $operacao
+     *
+     * @return T
+     */
+    public static function executar(string $nome, array $atributos, callable $operacao): mixed
+    {
+        $span = self::iniciar($nome, $atributos);
+
+        try {
+            $resultado = $operacao();
+
+            self::sucesso($span);
+
+            return $resultado;
+        } catch (\Throwable $e) {
+            self::erro($span, $e);
+
+            throw $e;
+        } finally {
+            self::finalizar($span);
+        }
+    }
+
+    /** trace.id do span ativo, ou null fora de um trace. */
+    public static function traceIdAtual(): ?string
+    {
+        if (!class_exists(Span::class)) {
+            return null;
+        }
+
+        $contexto = Span::getCurrent()->getContext();
+
+        return $contexto->isValid() ? $contexto->getTraceId() : null;
+    }
+
     public static function sucesso(?SpanInterface $span): void
     {
         $span?->setStatus(StatusCode::STATUS_OK);

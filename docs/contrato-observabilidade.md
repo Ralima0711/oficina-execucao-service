@@ -53,7 +53,7 @@ Copie estes arquivos, sem alterar, e use os helpers. O namespace `App\Infrastruc
 | Arquivo | Papel |
 |---|---|
 | `app/Infrastructure/Observability/OpenTelemetryProvider.php` | provider OTLP/HTTP, no-op sem endpoint, `nomeServico()`, `flush()` |
-| `app/Infrastructure/Observability/Tracing.php` | helper de spans (`iniciar` aceita `SpanKind` e pai explícito) |
+| `app/Infrastructure/Observability/Tracing.php` | helper de spans (`iniciar` aceita `SpanKind` e pai explícito; `executar()` envolve uma operação num span; `traceIdAtual()` devolve o `trace.id` para gravar em documentos) |
 | `app/Infrastructure/Observability/ContextoObservabilidadeProcessor.php` | põe `service.name`, `trace.id`, `span.id` em todo log |
 | `app/Infrastructure/Messaging/TraceContextCarrier.php` | `inject()` / `extract()` do `traceparent` em array de headers |
 | `app/Infrastructure/Messaging/MessageTracing.php` | `publicar()` e `consumir()` (PRODUCER / CONSUMER) |
