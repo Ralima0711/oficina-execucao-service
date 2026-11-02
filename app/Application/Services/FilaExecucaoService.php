@@ -92,6 +92,12 @@ class FilaExecucaoService
 
             try {
                 $this->timeline->registrar($evento);
+            } catch (ConflitoException $e) {
+                // A OS já tinha esse evento (a execução já começou por outro caminho): devolvê-la
+                // travaria a fila nela. Descarta o item e solta o mecânico.
+                $this->fila->concluir($mecanicoId, $item->osId);
+
+                throw $e;
             } catch (\Throwable $e) {
                 // Sem o evento na timeline a OS não pode sumir da fila: desfaz a retirada.
                 $this->fila->devolver($item, $mecanicoId);

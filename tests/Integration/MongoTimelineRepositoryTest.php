@@ -3,6 +3,7 @@
 namespace Tests\Integration;
 
 use App\Domain\Execucao\Entities\EventoTimeline;
+use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Persistence\Mongo\MongoTimelineRepository;
@@ -138,6 +139,99 @@ class MongoTimelineRepositoryTest extends TestCase
 
         $this->assertContains('os_ocorrido', $nomes);
         $this->assertContains('tipo_ocorrido', $nomes);
+    }
+
+    public function test_o_indice_unico_barra_a_mesma_transicao_duas_vezes_na_mesma_os(): void
+    {
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FINALIZADA, '15:00:00', StatusExecucao::EM_EXECUCAO, 60));
+
+        try {
+            $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FINALIZADA, '15:00:01', StatusExecucao::EM_EXECUCAO, 61));
+            $this->fail('A segunda transição igual na mesma OS deveria conflitar.');
+        } catch (ConflitoException $e) {
+            $this->assertSame('A OS ' . Ids::os(1) . ' já tem o evento EXECUCAO_FINALIZADA.', $e->getMessage());
+        }
+
+        $this->assertCount(1, $this->repo->porOs(Ids::os(1)));
+    }
+
+    public function test_notas_se_repetem_e_outras_os_podem_ter_a_mesma_transicao(): void
+    {
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:00:00'));
+        $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:00:01'));
+        $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:02'));
+        $this->repo->registrar($this->evento(2, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:03'));
+
+        $this->assertCount(3, $this->repo->porOs(Ids::os(1)));
+        $this->assertCount(1, $this->repo->porOs(Ids::os(2)));
+    }
+
+    public function test_processos_simultaneos_gravando_a_mesma_transicao_geram_um_so_evento(): void
+    {
+        $this->repo->criarIndices();
+
+        // Cada processo PHP tem a sua conexão e grava a mesma transição da mesma OS:
+        // exit 0 = gravou, 1 = conflito, 2 = erro inesperado.
+        $codigo = <<<'PHP'
+require getcwd() . '/vendor/autoload.php';
+$db = (new MongoDB\Client(getenv('MONGO_URI') ?: 'mongodb://127.0.0.1:27017'))->selectDatabase('execucao_test');
+$repo = new App\Infrastructure\Persistence\Mongo\MongoTimelineRepository($db);
+try {
+    $repo->registrar(new App\Domain\Execucao\Entities\EventoTimeline(
+        getenv('OS_ID'),
+        App\Domain\Execucao\ValueObjects\TipoEvento::EXECUCAO_FINALIZADA,
+        App\Domain\Execucao\ValueObjects\StatusExecucao::EM_EXECUCAO,
+        App\Domain\Execucao\ValueObjects\StatusExecucao::FINALIZADA,
+        null, 10, null, null, new DateTimeImmutable()
+    ));
+    exit(0);
+} catch (App\Domain\Execucao\Exceptions\ConflitoException) {
+    exit(1);
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage());
+    exit(2);
+}
+PHP;
+
+        $processos = [];
+        for ($i = 0; $i < 8; $i++) {
+            $processos[] = proc_open(
+                [PHP_BINARY, '-r', $codigo],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                base_path(),
+                array_merge(getenv(), ['OS_ID' => Ids::os(7)])
+            );
+        }
+
+        $saidas = [];
+        foreach ($processos as $processo) {
+            do {
+                $status = proc_get_status($processo);
+                if ($status['running']) {
+                    usleep(5000);
+                }
+            } while ($status['running']);
+
+            // O exitcode só é confiável na primeira leitura depois que o processo termina.
+            $saidas[] = $status['exitcode'];
+            proc_close($processo);
+        }
+
+        $this->assertSame(
+            ['gravou' => 1, 'conflito' => 7, 'erro' => 0],
+            [
+                'gravou'   => count(array_keys($saidas, 0, true)),
+                'conflito' => count(array_keys($saidas, 1, true)),
+                'erro'     => count(array_keys($saidas, 2, true)),
+            ],
+            'Exatamente um processo grava; os outros recebem conflito. Saídas: ' . implode(',', $saidas)
+        );
+        $this->assertCount(1, $this->repo->porOs(Ids::os(7)));
     }
 
     private function evento(

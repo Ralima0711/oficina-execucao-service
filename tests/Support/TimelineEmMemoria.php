@@ -3,6 +3,7 @@
 namespace Tests\Support;
 
 use App\Domain\Execucao\Entities\EventoTimeline;
+use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 
@@ -12,8 +13,17 @@ class TimelineEmMemoria implements TimelineRepositoryInterface
     /** @var EventoTimeline[] */
     public array $eventos = [];
 
+    /** Mesma regra do índice único do Mongo: cada transição acontece uma vez por OS. */
     public function registrar(EventoTimeline $evento): void
     {
+        if ($evento->tipo->mudaEstado()) {
+            foreach ($this->eventos as $existente) {
+                if ($existente->osId === $evento->osId && $existente->tipo === $evento->tipo) {
+                    throw new ConflitoException("A OS {$evento->osId} já tem o evento {$evento->tipo->value}.");
+                }
+            }
+        }
+
         $this->eventos[] = $evento;
     }
 
