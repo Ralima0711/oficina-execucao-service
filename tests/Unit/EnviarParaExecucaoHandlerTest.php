@@ -82,6 +82,18 @@ class EnviarParaExecucaoHandlerTest extends TestCase
         $this->assertSame(1, $this->fila->listar()[0]->prioridade);
     }
 
+    public function test_prioridade_fora_da_faixa_e_ajustada_e_nao_recusada(): void
+    {
+        $esperadas = [-3 => 1, 0 => 1, 1 => 1, 5 => 5, 6 => 5, 1_000_000 => 5];
+
+        foreach ($esperadas as $recebida => $aplicada) {
+            $fila = new FilaEmMemoria();
+            $this->consumirCom($this->novoHandler($fila), $this->comando(['prioridade' => $recebida]));
+
+            $this->assertSame($aplicada, $fila->listar()[0]->prioridade, "prioridade {$recebida}");
+        }
+    }
+
     public function test_mensagem_repetida_com_o_mesmo_message_id_e_descartada(): void
     {
         $envelope = $this->comando();
@@ -124,8 +136,6 @@ class EnviarParaExecucaoHandlerTest extends TestCase
             'osId ausente'       => [['osId' => null], 'os id'],
             'osId não-uuid'      => [['osId' => '123'], 'os id'],
             'orcamentoId ausente' => [['orcamentoId' => null], 'orcamento id'],
-            'prioridade 0'       => [['prioridade' => 0], 'prioridade'],
-            'prioridade 6'       => [['prioridade' => 6], 'prioridade'],
             'prioridade texto'   => [['prioridade' => 'alta'], 'prioridade'],
             'itens não é lista'  => [['itens' => 'x'], 'itens'],
         ];

@@ -35,6 +35,7 @@ class EnviarParaExecucaoHandler
     public function handle(Envelope $envelope): void
     {
         $dados = $this->validar($envelope->body);
+        $dados['prioridade'] = $this->ajustarPrioridade($dados['prioridade'], $envelope, $dados['osId']);
 
         if (!$this->mensagens->marcarSeNova($envelope->messageId)) {
             Log::info('mensagem_duplicada_descartada', [
@@ -68,6 +69,20 @@ class EnviarParaExecucaoHandler
         }
     }
 
+    /** A fila trabalha com a faixa PRIORIDADE_MINIMA..PRIORIDADE_MAXIMA; fora dela vale a mais próxima. */
+    private function ajustarPrioridade(int $recebida, Envelope $envelope, string $osId): int
+    {
+        $ajustada = max(ItemFila::PRIORIDADE_MINIMA, min(ItemFila::PRIORIDADE_MAXIMA, $recebida));
+
+        if ($ajustada !== $recebida) {
+            Log::warning('prioridade_ajustada_a_faixa', [
+                'os.id' => $osId, 'saga.id' => $envelope->sagaId, 'prioridade.recebida' => $recebida, 'prioridade.aplicada' => $ajustada,
+            ]);
+        }
+
+        return $ajustada;
+    }
+
     /**
      * @param array<string, mixed> $corpo
      *
@@ -78,7 +93,9 @@ class EnviarParaExecucaoHandler
         $validador = Validator::make($corpo, [
             'osId'        => ['required', 'uuid'],
             'orcamentoId' => ['required', 'uuid'],
-            'prioridade'  => ['sometimes', 'integer', 'between:' . ItemFila::PRIORIDADE_MINIMA . ',' . ItemFila::PRIORIDADE_MAXIMA],
+            // O contrato diz só "inteiro, padrão 1": não limita a faixa. Recusar uma prioridade fora dela
+            // mandaria a OS para a DLQ e a saga ficaria esperando para sempre; ela é ajustada em handle().
+            'prioridade'  => ['sometimes', 'integer'],
             'itens'       => ['sometimes', 'array'],
         ]);
 
