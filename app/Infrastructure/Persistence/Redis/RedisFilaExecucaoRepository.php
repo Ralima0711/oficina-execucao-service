@@ -5,13 +5,14 @@ namespace App\Infrastructure\Persistence\Redis;
 use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use Illuminate\Support\Facades\Redis;
 
 /**
  * Fila de execução no Redis:
  *
  *   execucao:fila                  Sorted Set  membro = osId, score = prioridade e chegada (abaixo)
- *   execucao:os:{osId}:execucao    String      execucaoId, enquanto a OS espera na fila
+ *   execucao:os:{osId}:execucao    String      JSON {execucaoId, saga}, enquanto a OS espera na fila
  *   execucao:mecanico:{id}:atual   String      osId que o mecânico está executando
  *
  * Score = (PRIORIDADE_MAXIMA - prioridade) * PASSO + chegada em ms. O Redis tira
@@ -95,7 +96,7 @@ end
 return saida
 LUA;
 
-    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em): ItemFila
+    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em, ?ContextoSaga $saga = null): ItemFila
     {
         $entrou = Redis::eval(
             self::LUA_ENFILEIRAR,
@@ -104,14 +105,14 @@ LUA;
             self::chaveExecucao($osId),
             self::score($prioridade, $em),
             $osId,
-            $execucaoId
+            self::valor($execucaoId, $saga)
         );
 
         if ((int) $entrou === 0) {
             throw new ConflitoException("A OS {$osId} já está na fila de execução.");
         }
 
-        return new ItemFila($osId, $em, $prioridade, $execucaoId);
+        return new ItemFila($osId, $em, $prioridade, $execucaoId, null, $saga);
     }
 
     public function proxima(string $mecanicoId): ?ItemFila
@@ -150,7 +151,7 @@ LUA;
             self::chaveExecucao($item->osId),
             self::score($item->prioridade, $item->enfileiradaEm),
             $item->osId,
-            $item->execucaoId ?? ''
+            self::valor($item->execucaoId ?? '', $item->saga)
         );
     }
 
@@ -206,9 +207,19 @@ LUA;
         return (ItemFila::PRIORIDADE_MAXIMA - $prioridade) * self::PASSO_PRIORIDADE + (int) $chegada->format('Uv');
     }
 
-    /** Desfaz o score em prioridade e hora de chegada. */
-    private static function item(string $osId, string|int|float $score, string $execucaoId): ItemFila
+    private static function valor(string $execucaoId, ?ContextoSaga $saga): string
     {
+        return json_encode(['execucaoId' => $execucaoId, 'saga' => $saga?->toArray()], JSON_UNESCAPED_SLASHES);
+    }
+
+    /** Desfaz o score em prioridade e hora de chegada, e o valor guardado em execucaoId e saga. */
+    private static function item(string $osId, string|int|float $score, string $valor): ItemFila
+    {
+        $guardado = json_decode($valor, true);
+        // Valor antigo (só o execucaoId, sem JSON) continua legível.
+        $execucaoId = is_array($guardado) ? (string) ($guardado['execucaoId'] ?? '') : $valor;
+        $saga = is_array($guardado) ? ContextoSaga::fromArray($guardado['saga'] ?? null) : null;
+
         $score = (int) round((float) $score);
         $chegadaMs = $score % self::PASSO_PRIORIDADE;
         $prioridade = ItemFila::PRIORIDADE_MAXIMA - intdiv($score, self::PASSO_PRIORIDADE);
@@ -217,6 +228,6 @@ LUA;
             ->setTimezone(new \DateTimeZone('UTC'))
             ->modify('+' . ($chegadaMs % 1000) . ' milliseconds');
 
-        return new ItemFila($osId, $chegada, $prioridade, $execucaoId === '' ? null : $execucaoId);
+        return new ItemFila($osId, $chegada, $prioridade, $execucaoId === '' ? null : $execucaoId, null, $saga);
     }
 }

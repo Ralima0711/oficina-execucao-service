@@ -2,9 +2,12 @@
 
 namespace App\Infrastructure\Providers;
 
+use App\Application\Messaging\PublicadorDeEventosInterface;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 use App\Domain\Execucao\Repositories\MensagemProcessadaRepositoryInterface;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
+use App\Infrastructure\Messaging\RabbitMq\ConexaoRabbitMq;
+use App\Infrastructure\Messaging\RabbitMq\RabbitMqPublicador;
 use App\Infrastructure\Persistence\Mongo\MongoMensagensProcessadasRepository;
 use App\Infrastructure\Persistence\Mongo\MongoTimelineRepository;
 use App\Infrastructure\Persistence\Redis\RedisFilaExecucaoRepository;
@@ -29,5 +32,8 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(TimelineRepositoryInterface::class, MongoTimelineRepository::class);
         $this->app->bind(MensagemProcessadaRepositoryInterface::class, MongoMensagensProcessadasRepository::class);
         $this->app->bind(FilaExecucaoRepositoryInterface::class, RedisFilaExecucaoRepository::class);
+
+        // Conecta ao RabbitMQ só ao publicar: subir a API não exige o broker no ar.
+        $this->app->bind(PublicadorDeEventosInterface::class, fn () => new RabbitMqPublicador(new ConexaoRabbitMq()));
     }
 }

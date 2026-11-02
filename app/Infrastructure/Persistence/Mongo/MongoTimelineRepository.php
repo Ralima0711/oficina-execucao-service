@@ -5,6 +5,7 @@ namespace App\Infrastructure\Persistence\Mongo;
 use App\Domain\Execucao\Entities\EventoTimeline;
 use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use MongoDB\BSON\UTCDateTime;
@@ -27,6 +28,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             $this->colecao()->insertOne([
                 'osId'            => $evento->osId,
                 'execucaoId'      => $evento->execucaoId,
+                'saga'            => $evento->saga?->toArray(),
                 'tipo'            => $evento->tipo->value,
                 'statusAnterior'  => $evento->statusAnterior?->value,
                 'statusNovo'      => $evento->statusNovo?->value,
@@ -146,6 +148,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             traceId: $d['traceId'] ?? null,
             ocorridoEm: $ocorridoEm,
             execucaoId: $d['execucaoId'] ?? null,
+            saga: ContextoSaga::fromArray(isset($d['saga']) ? (array) $d['saga'] : null),
         );
     }
 }

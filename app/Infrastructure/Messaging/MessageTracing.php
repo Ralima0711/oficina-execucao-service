@@ -6,6 +6,7 @@ use App\Infrastructure\Observability\OpenTelemetryProvider;
 use App\Infrastructure\Observability\Tracing;
 use Illuminate\Support\Facades\Log;
 use OpenTelemetry\API\Trace\SpanKind;
+use OpenTelemetry\Context\ContextInterface;
 
 /**
  * CAMADA DE INFRAESTRUTURA — Mensageria
@@ -28,13 +29,14 @@ final class MessageTracing
     /**
      * @param callable(array<string, mixed>): mixed $publicar recebe os headers com o traceparent
      * @param array<string, mixed>                  $atributos atributos extras do span (ex.: os.id)
+     * @param ContextInterface|null                 $pai       contexto pai explícito (ex.: o trace da saga); sem ele, vale o corrente
      */
-    public static function publicar(string $destino, callable $publicar, array $atributos = []): mixed
+    public static function publicar(string $destino, callable $publicar, array $atributos = [], ?ContextInterface $pai = null): mixed
     {
         $span = Tracing::iniciar("{$destino} publish", $atributos + [
             'messaging.destination.name' => $destino,
             'messaging.operation' => 'publish',
-        ], SpanKind::KIND_PRODUCER);
+        ], SpanKind::KIND_PRODUCER, $pai);
 
         try {
             // O span PRODUCER é o corrente: o consumer vira filho dele.

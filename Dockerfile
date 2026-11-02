@@ -1,8 +1,8 @@
 FROM php:8.2-cli
 
-# ext-mongodb: cliente oficial do MongoDB.
+# ext-mongodb: cliente oficial do MongoDB. sockets: exigida pelo php-amqplib 3.x (RabbitMQ).
 COPY --from=ghcr.io/mlocati/php-extension-installer:latest /usr/bin/install-php-extensions /usr/local/bin/
-RUN install-php-extensions mongodb zip \
+RUN install-php-extensions mongodb zip sockets \
     && apt-get update && apt-get install -y --no-install-recommends git unzip curl \
     && rm -rf /var/lib/apt/lists/*
 

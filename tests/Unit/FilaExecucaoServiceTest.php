@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Application\Services\EventosDeExecucao;
 use App\Application\Services\FilaExecucaoService;
 use App\Domain\Execucao\Entities\EventoTimeline;
 use App\Domain\Execucao\Exceptions\ConflitoException;
@@ -9,6 +10,7 @@ use Tests\Support\FilaEmMemoria;
 use Tests\Support\TimelineEmMemoria;
 use Tests\TestCase;
 use Tests\Support\Ids;
+use Tests\Support\PublicadorEmMemoria;
 
 class FilaExecucaoServiceTest extends TestCase
 {
@@ -21,7 +23,7 @@ class FilaExecucaoServiceTest extends TestCase
                 throw new \RuntimeException('mongo fora do ar');
             }
         };
-        $service = new FilaExecucaoService($fila, $timeline);
+        $service = new FilaExecucaoService($fila, $timeline, new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $service->enfileirar(Ids::os(10));
         $service->enfileirar(Ids::os(11));
@@ -48,7 +50,7 @@ class FilaExecucaoServiceTest extends TestCase
                 throw new ConflitoException('A OS já tem o evento EXECUCAO_INICIADA.');
             }
         };
-        $service = new FilaExecucaoService($fila, $timeline);
+        $service = new FilaExecucaoService($fila, $timeline, new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $service->enfileirar(Ids::os(10));
         $service->enfileirar(Ids::os(11));
@@ -66,7 +68,7 @@ class FilaExecucaoServiceTest extends TestCase
 
     public function test_enfileirar_recusa_prioridade_fora_da_faixa(): void
     {
-        $service = new FilaExecucaoService(new FilaEmMemoria(), new TimelineEmMemoria());
+        $service = new FilaExecucaoService(new FilaEmMemoria(), new TimelineEmMemoria(), new EventosDeExecucao(new PublicadorEmMemoria()));
 
         foreach ([0, 6] as $invalida) {
             try {
@@ -80,7 +82,7 @@ class FilaExecucaoServiceTest extends TestCase
 
     public function test_proxima_com_fila_vazia_devolve_null(): void
     {
-        $service = new FilaExecucaoService(new FilaEmMemoria(), new TimelineEmMemoria());
+        $service = new FilaExecucaoService(new FilaEmMemoria(), new TimelineEmMemoria(), new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $this->assertNull($service->proxima(Ids::mecanico(7)));
     }
