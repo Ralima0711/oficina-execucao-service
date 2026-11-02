@@ -17,6 +17,7 @@ COPY . .
 RUN composer dump-autoload --optimize \
     && mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views bootstrap/cache storage/api-docs
 
-EXPOSE 8000
+# 8080: o containerPort que os manifestos Kubernetes do infra-fase4 esperam.
+EXPOSE 8080
 
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8080"]

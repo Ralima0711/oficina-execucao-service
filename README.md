@@ -77,7 +77,7 @@ Use este compose **ou** o do `oficina-infra-fase4`, não os dois ao mesmo tempo:
 > **`docker/rabbitmq/` é uma cópia de desenvolvimento, não a fonte.** É um subconjunto do `rabbitmq/definitions.json` do `oficina-infra-fase4`, que é a fonte da verdade da topologia, e existe só para este compose subir sozinho. Ao mudar nome de fila, exchange ou binding, mude primeiro no infra e depois aqui. Fila com nome divergente não quebra teste nem deploy: o serviço sobe, declara a fila errada e consome uma fila que ninguém publica. Por isso a conferência contra o infra (`k8s/scripts/confere-filas.py`) deve rodar no CI deste serviço.
 
 - Swagger UI: http://localhost:8080/api/documentation
-- Saúde: http://localhost:8080/api/health
+- Saúde: http://localhost:8080/health (também em `/api/health`)
 
 Na primeira vez, instale as dependências (o código é montado como volume):
 
