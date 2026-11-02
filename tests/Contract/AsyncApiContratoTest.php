@@ -23,7 +23,7 @@ use Tests\TestCase;
 /**
  * Teste de contrato: o que a Execução consome e publica, validado contra o
  * docs/asyncapi.yaml (a fonte compartilhada com o OS Service e o Billing) e contra o
- * contrato de eventos v1.0.
+ * contrato de eventos v1.1.
  *
  *  - consumo:   tudo que o contrato PERMITE num comando, o consumidor aceita
  *               (recusar um comando válido deixa a saga esperando para sempre);
@@ -50,14 +50,14 @@ class AsyncApiContratoTest extends TestCase
 
     // ── versão do contrato ────────────────────────────────────────
 
-    public function test_o_contrato_implementado_e_a_versao_1_0(): void
+    public function test_o_contrato_implementado_e_a_versao_1_1(): void
     {
         $this->assertSame(
-            '1.0.0',
+            '1.1.0',
             $this->contrato->versao(),
             'O AsyncAPI mudou de versão. Revise o que a Execução consome e publica e só então atualize este teste.'
         );
-        $this->assertStringContainsString('v1.0', $this->texto('docs/contrato-eventos-fase4.md'), 'O contrato de eventos mudou de versão.');
+        $this->assertStringContainsString('v1.1', $this->texto('docs/contrato-eventos-fase4.md'), 'O contrato de eventos mudou de versão.');
     }
 
     // ── consumo: EnviarParaExecucao ───────────────────────────────
@@ -72,13 +72,6 @@ class AsyncApiContratoTest extends TestCase
             'só os campos obrigatórios' => [['osId' => $os, 'orcamentoId' => $orcamento]],
             'com prioridade 1'          => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 1]],
             'com prioridade 5'          => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 5]],
-            // O contrato só diz "integer, padrão 1": não limita a faixa. Recusar estes comandos
-            // mandaria a OS para a DLQ e a saga ficaria esperando para sempre.
-            'prioridade 0'              => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 0]],
-            'prioridade 6'              => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 6]],
-            'prioridade 10'             => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 10]],
-            'prioridade negativa'       => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => -3]],
-            'prioridade enorme'         => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 1_000_000]],
             'com itens'                 => [['osId' => $os, 'orcamentoId' => $orcamento, 'itens' => [
                 ['descricao' => 'Pastilha de freio', 'tipo' => 'peca', 'quantidade' => 2],
                 ['descricao' => 'Alinhamento', 'tipo' => 'servico', 'quantidade' => 1],
@@ -109,6 +102,11 @@ class AsyncApiContratoTest extends TestCase
         $this->assertSame(mb_strtolower($corpo['osId']), mb_strtolower($this->fila->listar()[0]->osId));
     }
 
+    /**
+     * Desde a v1.1 o schema limita a prioridade a 1..5, mas a regra 6 da Parte 5 manda o participante
+     * ajustar o campo acessório e executar: recusar mandaria a OS para a DLQ e a saga esperaria para sempre.
+     * Por isso estes comandos são inválidos no contrato e, ainda assim, o consumidor os aceita.
+     */
     public function test_prioridade_fora_da_faixa_e_ajustada_em_vez_de_recusada(): void
     {
         foreach ([-3 => 1, 0 => 1, 6 => 5, 10 => 5, 1_000_000 => 5] as $recebida => $esperada) {
@@ -132,6 +130,10 @@ class AsyncApiContratoTest extends TestCase
             'osId numérico'         => [['osId' => 123, 'orcamentoId' => $orcamento]],
             'prioridade como texto' => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 'alta']],
             'prioridade decimal'    => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 1.5]],
+            'prioridade 0'          => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 0]],
+            'prioridade 6'          => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 6]],
+            'prioridade negativa'   => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => -3]],
+            'prioridade enorme'     => [['osId' => $os, 'orcamentoId' => $orcamento, 'prioridade' => 1_000_000]],
             'item sem descricao'    => [['osId' => $os, 'orcamentoId' => $orcamento, 'itens' => [['tipo' => 'peca', 'quantidade' => 1]]]],
             'item com tipo errado'  => [['osId' => $os, 'orcamentoId' => $orcamento, 'itens' => [['descricao' => 'x', 'tipo' => 'brinde', 'quantidade' => 1]]]],
             'item com quantidade 0' => [['osId' => $os, 'orcamentoId' => $orcamento, 'itens' => [['descricao' => 'x', 'tipo' => 'peca', 'quantidade' => 0]]]],
@@ -145,7 +147,10 @@ class AsyncApiContratoTest extends TestCase
         $this->assertNotSame([], $this->contrato->validarEnvelope('EnviarParaExecucao', $this->comando($corpo)->toJson()));
     }
 
-    /** @return array<string, array{0: array<string, mixed>}> inválidos no contrato e que o consumidor também recusa */
+    /**
+     * @return array<string, array{0: array<string, mixed>}> inválidos no contrato e que o consumidor também recusa
+     *                                                      (a prioridade fora da faixa fica de fora: é ajustada, regra 6)
+     */
     public static function comandosQueOConsumidorTambemRecusa(): array
     {
         return array_intersect_key(self::comandosInvalidosSegundoOContrato(), array_flip([
@@ -318,7 +323,7 @@ class AsyncApiContratoTest extends TestCase
         );
     }
 
-    /** @return string[] as routing keys que o contrato v1.0 (Parte 2) atribui à Execução */
+    /** @return string[] as routing keys que o contrato v1.1 (Parte 2) atribui à Execução */
     private function routingKeysDaExecucaoNoContrato(): array
     {
         // Só a tabela de eventos ("Routing key | Publicado por"); a de comandos também cita a Execução.
