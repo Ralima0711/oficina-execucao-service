@@ -82,6 +82,7 @@ class MongoTimelineRepositoryTest extends TestCase
             observacao: 'pastilhas trocadas',
             traceId: '0af7651916cd43dd8448eb211c80319c',
             ocorridoEm: new \DateTimeImmutable('2026-10-27 15:35:00.456', new \DateTimeZone('UTC')),
+            execucaoId: '44444444-4444-4444-8444-444444444444',
         );
 
         $this->repo->registrar($original);

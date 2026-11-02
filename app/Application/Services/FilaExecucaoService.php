@@ -13,6 +13,7 @@ use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Observability\Tracing;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 
 class FilaExecucaoService
@@ -22,19 +23,39 @@ class FilaExecucaoService
         private TimelineRepositoryInterface $timeline,
     ) {}
 
-    public function enfileirar(string $osId): ItemFila
+    public function enfileirar(string $osId, int $prioridade = ItemFila::PRIORIDADE_MINIMA): ItemFila
     {
-        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId) {
+        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId, $prioridade) {
+            if ($prioridade < ItemFila::PRIORIDADE_MINIMA || $prioridade > ItemFila::PRIORIDADE_MAXIMA) {
+                throw new \DomainException(sprintf(
+                    'A prioridade deve estar entre %d e %d.',
+                    ItemFila::PRIORIDADE_MINIMA,
+                    ItemFila::PRIORIDADE_MAXIMA
+                ));
+            }
+
             $status = $this->timeline->ultimoEventoDeEstado($osId)?->statusNovo;
 
             if ($status === StatusExecucao::EM_EXECUCAO || $status === StatusExecucao::FINALIZADA) {
                 throw new ConflitoException("A OS {$osId} já está {$status->value} e não pode voltar para a fila.");
             }
 
-            $item = $this->fila->enfileirar($osId, CarbonImmutable::now('UTC')->toDateTimeImmutable());
+            // Um execucaoId por OS, desde que ela entra na fila: todo evento da execução (inclusive
+            // uma falha antes de o mecânico puxar a OS) carrega o mesmo id.
+            $item = $this->fila->enfileirar(
+                $osId,
+                $prioridade,
+                (string) Str::uuid(),
+                CarbonImmutable::now('UTC')->toDateTimeImmutable()
+            );
             $item = $item->comPosicao($this->fila->posicao($osId));
 
-            Log::info('os_enfileirada', ['os.id' => $osId, 'fila.posicao' => $item->posicao]);
+            Log::info('os_enfileirada', [
+                'os.id'           => $osId,
+                'execucao.id'     => $item->execucaoId,
+                'fila.prioridade' => $item->prioridade,
+                'fila.posicao'    => $item->posicao,
+            ]);
 
             return $item;
         });
@@ -66,6 +87,7 @@ class FilaExecucaoService
                 observacao: null,
                 traceId: Tracing::traceIdAtual(),
                 ocorridoEm: $agora,
+                execucaoId: $item->execucaoId ?? (string) Str::uuid(),
             );
 
             try {
@@ -79,6 +101,7 @@ class FilaExecucaoService
 
             Log::info('os_transicao_status', [
                 'os.id'               => $evento->osId,
+                'execucao.id'         => $evento->execucaoId,
                 'os.status_anterior'  => $evento->statusAnterior->value,
                 'os.status_novo'      => $evento->statusNovo->value,
                 'os.duracao_segundos' => $evento->duracaoSegundos,

@@ -7,26 +7,28 @@ use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 
 /**
- * Fake em memória da fila: mesmas regras do Redis (FIFO, OS única, um reparo por
- * mecânico), para testar serviços e API sem infraestrutura.
+ * Fake em memória da fila: mesmas regras do Redis (maior prioridade primeiro e, na
+ * mesma prioridade, quem chegou antes; OS única; um reparo por mecânico), para
+ * testar serviços e API sem infraestrutura.
  */
 class FilaEmMemoria implements FilaExecucaoRepositoryInterface
 {
-    /** @var array<string, \DateTimeImmutable> osId => chegada, na ordem da fila */
+    /** @var array<string, ItemFila> osId => item */
     private array $fila = [];
 
     /** @var array<string, string> mecanicoId => osId */
     private array $emExecucao = [];
 
-    public function enfileirar(string $osId, \DateTimeImmutable $em): ItemFila
+    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em): ItemFila
     {
         if (isset($this->fila[$osId])) {
             throw new ConflitoException("A OS {$osId} já está na fila de execução.");
         }
 
-        $this->fila[$osId] = $em;
+        $this->fila[$osId] = new ItemFila($osId, $em, $prioridade, $execucaoId);
+        $this->ordenar();
 
-        return new ItemFila($osId, $em);
+        return $this->fila[$osId];
     }
 
     public function proxima(string $mecanicoId): ?ItemFila
@@ -40,7 +42,7 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         }
 
         $osId = array_key_first($this->fila);
-        $item = new ItemFila($osId, $this->fila[$osId]);
+        $item = $this->fila[$osId];
         unset($this->fila[$osId]);
         $this->emExecucao[$mecanicoId] = $osId;
 
@@ -50,16 +52,16 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
     public function devolver(ItemFila $item, string $mecanicoId): void
     {
         unset($this->emExecucao[$mecanicoId]);
-        $this->fila[$item->osId] = $item->enfileiradaEm;
-        uasort($this->fila, fn ($a, $b) => $a <=> $b);
+        $this->fila[$item->osId] = $item;
+        $this->ordenar();
     }
 
     public function listar(): array
     {
         $itens = [];
         $posicao = 1;
-        foreach ($this->fila as $osId => $em) {
-            $itens[] = new ItemFila($osId, $em, $posicao++);
+        foreach ($this->fila as $item) {
+            $itens[] = $item->comPosicao($posicao++);
         }
 
         return $itens;
@@ -94,5 +96,11 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         unset($this->emExecucao[$mecanicoId]);
 
         return true;
+    }
+
+    private function ordenar(): void
+    {
+        uasort($this->fila, fn (ItemFila $a, ItemFila $b) => [$b->prioridade, $a->enfileiradaEm]
+            <=> [$a->prioridade, $b->enfileiradaEm]);
     }
 }

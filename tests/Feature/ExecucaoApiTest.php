@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Str;
 use Tests\Support\FilaEmMemoria;
 use Tests\Support\TimelineEmMemoria;
 use Tests\TestCase;
@@ -241,6 +242,71 @@ class ExecucaoApiTest extends TestCase
                 ['status' => 'APROVADA', 'tempoMedioSegundos' => 600, 'amostras' => 1],
                 ['status' => 'EM_EXECUCAO', 'tempoMedioSegundos' => 3600, 'amostras' => 1],
             ]);
+    }
+
+    // ── Prioridade e execucaoId ───────────────────────────────────
+
+    public function test_maior_prioridade_passa_na_frente_e_na_mesma_prioridade_vale_a_chegada(): void
+    {
+        $chegadas = [[10, 1], [11, 3], [12, 1], [13, 3], [14, 5]];
+        foreach ($chegadas as $i => [$os, $prioridade]) {
+            CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-27 14:00:00')->addSeconds($i));
+            $this->postJson('/api/execucao/fila', ['osId' => Ids::os($os), 'prioridade' => $prioridade])->assertCreated();
+        }
+
+        $this->getJson('/api/execucao/fila')
+            ->assertOk()
+            ->assertJsonPath('0.osId', Ids::os(14))
+            ->assertJsonPath('1.osId', Ids::os(11))
+            ->assertJsonPath('2.osId', Ids::os(13))
+            ->assertJsonPath('3.osId', Ids::os(10))
+            ->assertJsonPath('4.osId', Ids::os(12))
+            ->assertJsonPath('0.prioridade', 5)
+            ->assertJsonPath('4.posicao', 5);
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(1)])->assertJsonPath('osId', Ids::os(14));
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(2)])->assertJsonPath('osId', Ids::os(11));
+    }
+
+    public function test_prioridade_padrao_e_1_e_fora_da_faixa_e_recusada(): void
+    {
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertCreated()->assertJsonPath('prioridade', 1);
+
+        foreach ([0, 6, -1, 'alta'] as $invalida) {
+            $this->postJson('/api/execucao/fila', ['osId' => Ids::os(11), 'prioridade' => $invalida])
+                ->assertStatus(422)
+                ->assertJsonValidationErrors('prioridade');
+        }
+    }
+
+    public function test_execucao_id_nasce_ao_enfileirar_e_acompanha_a_os_ate_a_finalizacao(): void
+    {
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/diagnostico', ['mecanicoId' => Ids::mecanico(7)]);
+
+        $execucaoId = $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])
+            ->assertCreated()
+            ->json('execucaoId');
+
+        $this->assertTrue(Str::isUuid($execucaoId));
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertJsonPath('execucaoId', $execucaoId);
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/finalizar', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertJsonPath('execucaoId', $execucaoId);
+
+        $timeline = $this->getJson('/api/execucao/os/' . Ids::os(10) . '/timeline')->json();
+
+        $this->assertNull($timeline[0]['execucaoId'], 'O diagnóstico acontece antes de a OS entrar na fila.');
+        $this->assertSame($execucaoId, $timeline[1]['execucaoId']);
+        $this->assertSame($execucaoId, $timeline[2]['execucaoId']);
+    }
+
+    public function test_cada_os_recebe_o_seu_execucao_id(): void
+    {
+        $a = $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->json('execucaoId');
+        $b = $this->postJson('/api/execucao/fila', ['osId' => Ids::os(11)])->json('execucaoId');
+
+        $this->assertNotSame($a, $b);
     }
 
     public function test_rota_com_os_id_nao_numerico_nao_existe(): void

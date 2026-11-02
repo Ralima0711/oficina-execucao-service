@@ -17,12 +17,14 @@ final class EventoTimeline implements \JsonSerializable
         public readonly ?string $observacao,
         public readonly ?string $traceId,
         public readonly \DateTimeImmutable $ocorridoEm,
+        public readonly ?string $execucaoId = null,
     ) {}
 
     public function toArray(): array
     {
         return [
             'osId'            => $this->osId,
+            'execucaoId'      => $this->execucaoId,
             'tipo'            => $this->tipo->value,
             'statusAnterior'  => $this->statusAnterior?->value,
             'statusNovo'      => $this->statusNovo?->value,

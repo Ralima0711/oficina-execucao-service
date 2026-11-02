@@ -95,6 +95,7 @@ class ExecucaoService
                 max(0, $agora->getTimestamp() - $ultimo->ocorridoEm->getTimestamp()),
                 $observacao,
                 $agora,
+                $ultimo->execucaoId,
             );
 
             // Libera o mecânico para puxar a próxima OS. Idempotente.
@@ -143,6 +144,7 @@ class ExecucaoService
         ?int $duracaoSegundos,
         ?string $observacao,
         ?\DateTimeImmutable $ocorridoEm = null,
+        ?string $execucaoId = null,
     ): EventoTimeline {
         $evento = new EventoTimeline(
             osId: $osId,
@@ -154,12 +156,14 @@ class ExecucaoService
             observacao: $observacao,
             traceId: Tracing::traceIdAtual(),
             ocorridoEm: $ocorridoEm ?? CarbonImmutable::now('UTC')->toDateTimeImmutable(),
+            execucaoId: $execucaoId,
         );
 
         $this->timeline->registrar($evento);
 
         Log::info('os_transicao_status', [
             'os.id'               => $osId,
+            'execucao.id'         => $execucaoId,
             'os.status_anterior'  => $de->value,
             'os.status_novo'      => $para->value,
             'os.duracao_segundos' => $duracaoSegundos,

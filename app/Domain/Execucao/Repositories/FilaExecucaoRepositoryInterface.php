@@ -11,7 +11,7 @@ interface FilaExecucaoRepositoryInterface
     /**
      * @throws ConflitoException se a OS já está na fila
      */
-    public function enfileirar(string $osId, \DateTimeImmutable $em): ItemFila;
+    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em): ItemFila;
 
     /**
      * Tira a próxima OS da fila e a atribui ao mecânico, num passo atômico.
@@ -27,7 +27,8 @@ interface FilaExecucaoRepositoryInterface
     public function devolver(ItemFila $item, string $mecanicoId): void;
 
     /**
-     * @return ItemFila[] em ordem de chegada, com a posição (1 = próxima)
+     * @return ItemFila[] na ordem de atendimento (maior prioridade primeiro; mesma
+     *                    prioridade, por chegada), com a posição (1 = próxima)
      */
     public function listar(): array;
 

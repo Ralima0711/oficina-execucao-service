@@ -3,6 +3,7 @@
 namespace App\Interface\Http\Controllers;
 
 use App\Application\Services\FilaExecucaoService;
+use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\NaoEncontradoException;
 use App\Interface\Http\Requests\EnfileirarRequest;
 use App\Interface\Http\Requests\MecanicoRequest;
@@ -22,7 +23,12 @@ class FilaExecucaoController extends Controller
 
     public function store(EnfileirarRequest $request): JsonResponse
     {
-        return response()->json($this->service->enfileirar($request->string('osId')->toString()), 201);
+        $item = $this->service->enfileirar(
+            $request->string('osId')->toString(),
+            $request->integer('prioridade', ItemFila::PRIORIDADE_MINIMA)
+        );
+
+        return response()->json($item, 201);
     }
 
     public function proxima(MecanicoRequest $request): JsonResponse

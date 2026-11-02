@@ -20,6 +20,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
     {
         $this->colecao()->insertOne([
             'osId'            => $evento->osId,
+            'execucaoId'      => $evento->execucaoId,
             'tipo'            => $evento->tipo->value,
             'statusAnterior'  => $evento->statusAnterior?->value,
             'statusNovo'      => $evento->statusNovo?->value,
@@ -113,6 +114,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             observacao: $d['observacao'] ?? null,
             traceId: $d['traceId'] ?? null,
             ocorridoEm: $ocorridoEm,
+            execucaoId: $d['execucaoId'] ?? null,
         );
     }
 }

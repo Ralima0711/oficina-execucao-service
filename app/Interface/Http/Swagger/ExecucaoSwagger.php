@@ -14,6 +14,8 @@ use OpenApi\Attributes as OA;
     schema: 'ItemFila',
     properties: [
         new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
+        new OA\Property(property: 'execucaoId', type: 'string', format: 'uuid', nullable: true, example: '44444444-4444-4444-8444-444444444444'),
+        new OA\Property(property: 'prioridade', type: 'integer', minimum: 1, maximum: 5, example: 1, description: 'Maior número = mais urgente; mesma prioridade, por ordem de chegada'),
         new OA\Property(property: 'posicao', type: 'integer', nullable: true, example: 1, description: '1 = próxima a ser atendida'),
         new OA\Property(property: 'enfileiradaEm', type: 'string', format: 'date-time', example: '2026-10-27T14:00:00.000Z'),
     ]
@@ -22,6 +24,7 @@ use OpenApi\Attributes as OA;
     schema: 'EventoTimeline',
     properties: [
         new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
+        new OA\Property(property: 'execucaoId', type: 'string', format: 'uuid', nullable: true, example: '44444444-4444-4444-8444-444444444444', description: 'Presente nos eventos de execução (iniciada e finalizada)'),
         new OA\Property(property: 'tipo', type: 'string', enum: ['DIAGNOSTICO_INICIADO', 'EXECUCAO_INICIADA', 'EXECUCAO_FINALIZADA', 'NOTA'], example: 'EXECUCAO_INICIADA'),
         new OA\Property(property: 'statusAnterior', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'APROVADA'),
         new OA\Property(property: 'statusNovo', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'EM_EXECUCAO'),
@@ -72,7 +75,10 @@ class ExecucaoSwagger
             required: true,
             content: new OA\JsonContent(
                 required: ['osId'],
-                properties: [new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111')]
+                properties: [
+                    new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
+                    new OA\Property(property: 'prioridade', type: 'integer', minimum: 1, maximum: 5, default: 1, example: 1, description: 'Maior número = mais urgente'),
+                ]
             )
         ),
         responses: [
