@@ -23,8 +23,8 @@ Nenhum outro serviço acessa estes bancos.
 
 Como estão usados hoje:
 
-- **Redis:** Sorted Set (`execucao:fila`) para a ordem e uma trava por mecânico (`execucao:mecanico:{id}:atual`). Enfileirar, puxar, devolver e concluir são scripts Lua atômicos.
-- **MongoDB:** coleção `timeline_os`, um documento por evento, só inserção, com o `traceId` de cada evento.
+- **Redis:** Sorted Set (`execucao:fila`) ordenado por prioridade e chegada, o `execucaoId` de cada OS enquanto ela espera (`execucao:os:{osId}:execucao`) e uma trava por mecânico (`execucao:mecanico:{id}:atual`). Enfileirar, puxar, devolver, remover e concluir são scripts Lua atômicos.
+- **MongoDB:** coleção `timeline_os`, um documento por evento, só inserção, com o `traceId` de cada evento. Um índice único parcial garante que cada transição acontece uma vez por OS (duas requisições simultâneas não gravam o mesmo evento duas vezes). A coleção `mensagens_processadas` guarda os `messageId` já tratados (TTL de 30 dias).
 
 ## Mensageria
 
@@ -36,7 +36,9 @@ Como estão usados hoje:
 Toda falha publica evento. Falhar em silêncio trava a Saga — o orquestrador fica
 esperando para sempre.
 
-> **Estado atual:** a mensageria ainda não está implementada neste serviço; a fila é alimentada por `POST /api/execucao/fila`. A fila hoje é FIFO: a **prioridade** do contrato ainda não foi implementada. Os identificadores (`osId`, `mecanicoId`) são inteiros, e o contrato prevê UUID.
+> **Estado atual:** a mensageria (consumidores, publicação de eventos e envelope) ainda não está implementada neste serviço; a fila é alimentada por `POST /api/execucao/fila`. Já seguem o contrato v1.0: ids em **UUID** (`osId`, `mecanicoId`, `execucaoId`), **prioridade** na fila e o registro de `messageId` para a idempotência, que ainda aguarda os consumidores.
+>
+> A **prioridade** é premissa: o contrato traz `prioridade` (padrão 1) sem definir o sentido; aqui, maior número é mais urgente (faixa de 1 a 5) e, na mesma prioridade, vale a ordem de chegada. Pendente de confirmação na revisão do contrato.
 
 ## Como rodar o ambiente
 
@@ -76,9 +78,9 @@ docker compose run --rm --no-deps app composer install
 
 | Método | Rota | O que faz |
 |---|---|---|
-| GET | `/api/execucao/fila` | lista a fila em ordem de chegada |
-| POST | `/api/execucao/fila` | enfileira uma OS aprovada (`{"osId": 123}`) |
-| POST | `/api/execucao/fila/proxima` | mecânico puxa a próxima OS e inicia a execução (`{"mecanicoId": 7}`) |
+| GET | `/api/execucao/fila` | lista a fila na ordem de atendimento (prioridade, depois chegada) |
+| POST | `/api/execucao/fila` | enfileira uma OS aprovada (`{"osId": "<uuid>", "prioridade": 1}`; prioridade opcional, de 1 a 5) |
+| POST | `/api/execucao/fila/proxima` | mecânico puxa a próxima OS e inicia a execução (`{"mecanicoId": "<uuid>"}`) |
 | DELETE | `/api/execucao/fila/{osId}` | remove a OS da fila |
 | GET | `/api/execucao/os/{osId}/timeline` | histórico da OS |
 | POST | `/api/execucao/os/{osId}/diagnostico` | inicia o diagnóstico |
@@ -86,7 +88,7 @@ docker compose run --rm --no-deps app composer install
 | POST | `/api/execucao/os/{osId}/finalizar` | encerra o reparo e libera o mecânico |
 | GET | `/api/execucao/metricas/tempo-medio` | tempo médio por status |
 
-Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecânico), `404` (fila vazia, OS fora da fila ou sem eventos), `422` (transição inválida ou validação).
+Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecânico, transição já registrada), `404` (fila vazia, OS fora da fila ou sem eventos), `422` (transição inválida, id que não é UUID ou prioridade fora da faixa).
 
 > O mecânico vem no corpo da requisição enquanto a autenticação entre serviços não está definida.
 
