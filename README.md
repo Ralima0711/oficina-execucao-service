@@ -107,11 +107,16 @@ Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecâni
 # Unitários e de API (repositórios em memória) + integração com Redis, Mongo e RabbitMQ reais
 docker compose exec app vendor/bin/phpunit
 
+# Teste de contrato: valida o que a Execução consome e publica contra o docs/asyncapi.yaml
+docker compose exec app vendor/bin/phpunit --testsuite Contract
+
 # Só a integração (usa redis db 15, o banco execucao_test e filas de teste com sufixo .test)
 docker compose exec app vendor/bin/phpunit --testsuite Integration
 ```
 
 Fora do compose, os testes de integração são pulados quando Redis, Mongo ou RabbitMQ não estão acessíveis.
+
+O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do OS Service e do Billing: se o contrato mudar, ou se a Execução deixar de cumprir algo (um campo, uma fila, um comando válido que o consumidor recusaria), ele quebra. As lacunas conhecidas (`execucao.falhou` e o consumo de `execucao.cancelar-execucao`) ficam registradas no próprio teste. O helper `tests/Support/ContratoAsyncApi.php` pode ser copiado para os outros serviços.
 
 ## Documentação
 
