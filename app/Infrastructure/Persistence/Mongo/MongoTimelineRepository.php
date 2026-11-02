@@ -31,7 +31,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
         ]);
     }
 
-    public function porOs(int $osId): array
+    public function porOs(string $osId): array
     {
         $cursor = $this->colecao()->find(
             ['osId' => $osId],
@@ -46,7 +46,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
         return $eventos;
     }
 
-    public function ultimoEventoDeEstado(int $osId): ?EventoTimeline
+    public function ultimoEventoDeEstado(string $osId): ?EventoTimeline
     {
         $documento = $this->colecao()->findOne(
             ['osId' => $osId, 'tipo' => ['$ne' => TipoEvento::NOTA->value]],
@@ -104,11 +104,11 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             ->setTimezone(new \DateTimeZone('UTC'));
 
         return new EventoTimeline(
-            osId: (int) $d['osId'],
+            osId: (string) $d['osId'],
             tipo: TipoEvento::from($d['tipo']),
             statusAnterior: isset($d['statusAnterior']) ? StatusExecucao::from($d['statusAnterior']) : null,
             statusNovo: isset($d['statusNovo']) ? StatusExecucao::from($d['statusNovo']) : null,
-            mecanicoId: isset($d['mecanicoId']) ? (int) $d['mecanicoId'] : null,
+            mecanicoId: isset($d['mecanicoId']) ? (string) $d['mecanicoId'] : null,
             duracaoSegundos: isset($d['duracaoSegundos']) ? (int) $d['duracaoSegundos'] : null,
             observacao: $d['observacao'] ?? null,
             traceId: $d['traceId'] ?? null,

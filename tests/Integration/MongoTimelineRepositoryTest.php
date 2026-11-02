@@ -8,6 +8,7 @@ use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Persistence\Mongo\MongoTimelineRepository;
 use MongoDB\Database;
 use Tests\TestCase;
+use Tests\Support\Ids;
 
 /**
  * Contra um MongoDB de verdade (banco `execucao_test`). Roda dentro do compose:
@@ -60,23 +61,23 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:00'));
         $this->repo->registrar($this->evento(2, TipoEvento::DIAGNOSTICO_INICIADO, '14:05:00'));
 
-        $eventos = $this->repo->porOs(1);
+        $eventos = $this->repo->porOs(Ids::os(1));
 
         $this->assertSame(
             [TipoEvento::DIAGNOSTICO_INICIADO, TipoEvento::EXECUCAO_INICIADA],
             array_map(fn (EventoTimeline $e) => $e->tipo, $eventos)
         );
-        $this->assertSame([], $this->repo->porOs(404));
+        $this->assertSame([], $this->repo->porOs(Ids::os(404)));
     }
 
     public function test_preserva_todos_os_campos_do_evento(): void
     {
         $original = new EventoTimeline(
-            osId: 5,
+            osId: Ids::os(5),
             tipo: TipoEvento::EXECUCAO_FINALIZADA,
             statusAnterior: StatusExecucao::EM_EXECUCAO,
             statusNovo: StatusExecucao::FINALIZADA,
-            mecanicoId: 7,
+            mecanicoId: Ids::mecanico(7),
             duracaoSegundos: 5400,
             observacao: 'pastilhas trocadas',
             traceId: '0af7651916cd43dd8448eb211c80319c',
@@ -85,14 +86,14 @@ class MongoTimelineRepositoryTest extends TestCase
 
         $this->repo->registrar($original);
 
-        $this->assertSame($original->toArray(), $this->repo->porOs(5)[0]->toArray());
+        $this->assertSame($original->toArray(), $this->repo->porOs(Ids::os(5))[0]->toArray());
     }
 
     public function test_nota_volta_sem_status_nem_duracao(): void
     {
-        $this->repo->registrar(new EventoTimeline(5, TipoEvento::NOTA, null, null, 7, null, 'anotação', null, new \DateTimeImmutable()));
+        $this->repo->registrar(new EventoTimeline(Ids::os(5), TipoEvento::NOTA, null, null, Ids::mecanico(7), null, 'anotação', null, new \DateTimeImmutable()));
 
-        $nota = $this->repo->porOs(5)[0];
+        $nota = $this->repo->porOs(Ids::os(5))[0];
 
         $this->assertNull($nota->statusNovo);
         $this->assertNull($nota->duracaoSegundos);
@@ -104,10 +105,10 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:00'));
         $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:30:00'));
 
-        $ultimo = $this->repo->ultimoEventoDeEstado(1);
+        $ultimo = $this->repo->ultimoEventoDeEstado(Ids::os(1));
 
         $this->assertSame(TipoEvento::DIAGNOSTICO_INICIADO, $ultimo->tipo);
-        $this->assertNull($this->repo->ultimoEventoDeEstado(404));
+        $this->assertNull($this->repo->ultimoEventoDeEstado(Ids::os(404)));
     }
 
     public function test_tempo_medio_por_status(): void
@@ -146,11 +147,11 @@ class MongoTimelineRepositoryTest extends TestCase
         ?int $duracao = null,
     ): EventoTimeline {
         return new EventoTimeline(
-            $osId,
+            Ids::os($osId),
             $tipo,
             $anterior,
             null,
-            7,
+            Ids::mecanico(7),
             $duracao,
             null,
             null,

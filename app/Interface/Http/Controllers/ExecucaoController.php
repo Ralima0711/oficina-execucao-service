@@ -14,38 +14,38 @@ class ExecucaoController extends Controller
 {
     public function __construct(private ExecucaoService $service) {}
 
-    public function timeline(int $osId): JsonResponse
+    public function timeline(string $osId): JsonResponse
     {
         return response()->json($this->service->timeline($osId));
     }
 
-    public function iniciarDiagnostico(MecanicoRequest $request, int $osId): JsonResponse
+    public function iniciarDiagnostico(MecanicoRequest $request, string $osId): JsonResponse
     {
         $evento = $this->service->iniciarDiagnostico(
             $osId,
-            $request->integer('mecanicoId'),
+            $request->string('mecanicoId')->toString(),
             $request->input('observacao')
         );
 
         return response()->json($evento, 201);
     }
 
-    public function nota(NotaRequest $request, int $osId): JsonResponse
+    public function nota(NotaRequest $request, string $osId): JsonResponse
     {
         $evento = $this->service->registrarNota(
             $osId,
-            $request->integer('mecanicoId'),
+            $request->string('mecanicoId')->toString(),
             (string) $request->input('texto')
         );
 
         return response()->json($evento, 201);
     }
 
-    public function finalizar(MecanicoRequest $request, int $osId): JsonResponse
+    public function finalizar(MecanicoRequest $request, string $osId): JsonResponse
     {
         $evento = $this->service->finalizar(
             $osId,
-            $request->integer('mecanicoId'),
+            $request->string('mecanicoId')->toString(),
             $request->input('observacao')
         );
 

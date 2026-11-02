@@ -46,18 +46,18 @@ LUA;
 return redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
 LUA;
 
-    public function enfileirar(int $osId, \DateTimeImmutable $em): ItemFila
+    public function enfileirar(string $osId, \DateTimeImmutable $em): ItemFila
     {
         $entrou = Redis::eval(self::LUA_ENFILEIRAR, 1, self::CHAVE_FILA, self::paraMs($em), $osId);
 
         if ((int) $entrou === 0) {
-            throw new ConflitoException("A OS #{$osId} já está na fila de execução.");
+            throw new ConflitoException("A OS {$osId} já está na fila de execução.");
         }
 
         return new ItemFila($osId, $em);
     }
 
-    public function proxima(int $mecanicoId): ?ItemFila
+    public function proxima(string $mecanicoId): ?ItemFila
     {
         $r = Redis::eval(self::LUA_PROXIMA, 2, self::CHAVE_FILA, self::chaveMecanico($mecanicoId));
 
@@ -66,17 +66,17 @@ LUA;
         if ($codigo === -1) {
             $osAtual = $this->osEmExecucao($mecanicoId);
 
-            throw new ConflitoException("O mecânico #{$mecanicoId} já está executando a OS #{$osAtual}.");
+            throw new ConflitoException("O mecânico {$mecanicoId} já está executando a OS {$osAtual}.");
         }
 
         if ($codigo === 0) {
             return null;
         }
 
-        return new ItemFila((int) $r[1], self::deMs((int) $r[2]));
+        return new ItemFila((string) $r[1], self::deMs((int) $r[2]));
     }
 
-    public function devolver(ItemFila $item, int $mecanicoId): void
+    public function devolver(ItemFila $item, string $mecanicoId): void
     {
         Redis::eval(
             self::LUA_DEVOLVER,
@@ -95,37 +95,37 @@ LUA;
 
         // Resposta achatada: [osId, score, osId, score, ...]
         for ($i = 0, $n = count($plano); $i < $n; $i += 2) {
-            $itens[] = new ItemFila((int) $plano[$i], self::deMs((int) $plano[$i + 1]), intdiv($i, 2) + 1);
+            $itens[] = new ItemFila((string) $plano[$i], self::deMs((int) $plano[$i + 1]), intdiv($i, 2) + 1);
         }
 
         return $itens;
     }
 
-    public function posicao(int $osId): ?int
+    public function posicao(string $osId): ?int
     {
         $rank = Redis::zrank(self::CHAVE_FILA, (string) $osId);
 
         return $rank === null || $rank === false ? null : ((int) $rank) + 1;
     }
 
-    public function remover(int $osId): bool
+    public function remover(string $osId): bool
     {
         return (int) Redis::zrem(self::CHAVE_FILA, (string) $osId) > 0;
     }
 
-    public function osEmExecucao(int $mecanicoId): ?int
+    public function osEmExecucao(string $mecanicoId): ?string
     {
         $valor = Redis::get(self::chaveMecanico($mecanicoId));
 
-        return $valor === null || $valor === false ? null : (int) $valor;
+        return $valor === null || $valor === false ? null : (string) $valor;
     }
 
-    public function concluir(int $mecanicoId, int $osId): bool
+    public function concluir(string $mecanicoId, string $osId): bool
     {
         return (int) Redis::eval(self::LUA_CONCLUIR, 1, self::chaveMecanico($mecanicoId), $osId) > 0;
     }
 
-    public static function chaveMecanico(int $mecanicoId): string
+    public static function chaveMecanico(string $mecanicoId): string
     {
         return "execucao:mecanico:{$mecanicoId}:atual";
     }

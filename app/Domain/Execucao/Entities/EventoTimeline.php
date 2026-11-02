@@ -8,11 +8,11 @@ use App\Domain\Execucao\ValueObjects\TipoEvento;
 final class EventoTimeline implements \JsonSerializable
 {
     public function __construct(
-        public readonly int $osId,
+        public readonly string $osId,
         public readonly TipoEvento $tipo,
         public readonly ?StatusExecucao $statusAnterior,
         public readonly ?StatusExecucao $statusNovo,
-        public readonly ?int $mecanicoId,
+        public readonly ?string $mecanicoId,
         public readonly ?int $duracaoSegundos,
         public readonly ?string $observacao,
         public readonly ?string $traceId,

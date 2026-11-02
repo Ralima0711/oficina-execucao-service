@@ -17,12 +17,12 @@ class TimelineEmMemoria implements TimelineRepositoryInterface
         $this->eventos[] = $evento;
     }
 
-    public function porOs(int $osId): array
+    public function porOs(string $osId): array
     {
         return array_values(array_filter($this->eventos, fn (EventoTimeline $e) => $e->osId === $osId));
     }
 
-    public function ultimoEventoDeEstado(int $osId): ?EventoTimeline
+    public function ultimoEventoDeEstado(string $osId): ?EventoTimeline
     {
         $estado = array_filter($this->porOs($osId), fn (EventoTimeline $e) => $e->tipo !== TipoEvento::NOTA);
 

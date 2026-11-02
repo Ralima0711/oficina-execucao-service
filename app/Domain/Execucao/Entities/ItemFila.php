@@ -6,7 +6,7 @@ namespace App\Domain\Execucao\Entities;
 final class ItemFila implements \JsonSerializable
 {
     public function __construct(
-        public readonly int $osId,
+        public readonly string $osId,
         public readonly \DateTimeImmutable $enfileiradaEm,
         public readonly ?int $posicao = null,
     ) {}

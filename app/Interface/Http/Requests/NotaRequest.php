@@ -14,7 +14,7 @@ class NotaRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'mecanicoId' => ['required', 'integer', 'min:1'],
+            'mecanicoId' => ['required', 'uuid'],
             'texto'      => ['required', 'string', 'max:2000'],
         ];
     }

@@ -22,12 +22,12 @@ class FilaExecucaoController extends Controller
 
     public function store(EnfileirarRequest $request): JsonResponse
     {
-        return response()->json($this->service->enfileirar($request->integer('osId')), 201);
+        return response()->json($this->service->enfileirar($request->string('osId')->toString()), 201);
     }
 
     public function proxima(MecanicoRequest $request): JsonResponse
     {
-        $evento = $this->service->proxima($request->integer('mecanicoId'));
+        $evento = $this->service->proxima($request->string('mecanicoId')->toString());
 
         if ($evento === null) {
             throw new NaoEncontradoException('A fila de execução está vazia.');
@@ -36,7 +36,7 @@ class FilaExecucaoController extends Controller
         return response()->json($evento);
     }
 
-    public function destroy(int $osId): JsonResponse
+    public function destroy(string $osId): JsonResponse
     {
         $this->service->remover($osId);
 

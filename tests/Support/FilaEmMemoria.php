@@ -12,16 +12,16 @@ use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
  */
 class FilaEmMemoria implements FilaExecucaoRepositoryInterface
 {
-    /** @var array<int, \DateTimeImmutable> osId => chegada, na ordem da fila */
+    /** @var array<string, \DateTimeImmutable> osId => chegada, na ordem da fila */
     private array $fila = [];
 
-    /** @var array<int, int> mecanicoId => osId */
+    /** @var array<string, string> mecanicoId => osId */
     private array $emExecucao = [];
 
-    public function enfileirar(int $osId, \DateTimeImmutable $em): ItemFila
+    public function enfileirar(string $osId, \DateTimeImmutable $em): ItemFila
     {
         if (isset($this->fila[$osId])) {
-            throw new ConflitoException("A OS #{$osId} já está na fila de execução.");
+            throw new ConflitoException("A OS {$osId} já está na fila de execução.");
         }
 
         $this->fila[$osId] = $em;
@@ -29,10 +29,10 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         return new ItemFila($osId, $em);
     }
 
-    public function proxima(int $mecanicoId): ?ItemFila
+    public function proxima(string $mecanicoId): ?ItemFila
     {
         if (isset($this->emExecucao[$mecanicoId])) {
-            throw new ConflitoException("O mecânico #{$mecanicoId} já está executando a OS #{$this->emExecucao[$mecanicoId]}.");
+            throw new ConflitoException("O mecânico {$mecanicoId} já está executando a OS {$this->emExecucao[$mecanicoId]}.");
         }
 
         if ($this->fila === []) {
@@ -47,7 +47,7 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         return $item;
     }
 
-    public function devolver(ItemFila $item, int $mecanicoId): void
+    public function devolver(ItemFila $item, string $mecanicoId): void
     {
         unset($this->emExecucao[$mecanicoId]);
         $this->fila[$item->osId] = $item->enfileiradaEm;
@@ -65,14 +65,14 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         return $itens;
     }
 
-    public function posicao(int $osId): ?int
+    public function posicao(string $osId): ?int
     {
         $indice = array_search($osId, array_keys($this->fila), true);
 
         return $indice === false ? null : $indice + 1;
     }
 
-    public function remover(int $osId): bool
+    public function remover(string $osId): bool
     {
         $existia = isset($this->fila[$osId]);
         unset($this->fila[$osId]);
@@ -80,12 +80,12 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         return $existia;
     }
 
-    public function osEmExecucao(int $mecanicoId): ?int
+    public function osEmExecucao(string $mecanicoId): ?string
     {
         return $this->emExecucao[$mecanicoId] ?? null;
     }
 
-    public function concluir(int $mecanicoId, int $osId): bool
+    public function concluir(string $mecanicoId, string $osId): bool
     {
         if (($this->emExecucao[$mecanicoId] ?? null) !== $osId) {
             return false;

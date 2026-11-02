@@ -13,7 +13,7 @@ use OpenApi\Attributes as OA;
 #[OA\Schema(
     schema: 'ItemFila',
     properties: [
-        new OA\Property(property: 'osId', type: 'integer', example: 123),
+        new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
         new OA\Property(property: 'posicao', type: 'integer', nullable: true, example: 1, description: '1 = próxima a ser atendida'),
         new OA\Property(property: 'enfileiradaEm', type: 'string', format: 'date-time', example: '2026-10-27T14:00:00.000Z'),
     ]
@@ -21,11 +21,11 @@ use OpenApi\Attributes as OA;
 #[OA\Schema(
     schema: 'EventoTimeline',
     properties: [
-        new OA\Property(property: 'osId', type: 'integer', example: 123),
+        new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
         new OA\Property(property: 'tipo', type: 'string', enum: ['DIAGNOSTICO_INICIADO', 'EXECUCAO_INICIADA', 'EXECUCAO_FINALIZADA', 'NOTA'], example: 'EXECUCAO_INICIADA'),
         new OA\Property(property: 'statusAnterior', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'APROVADA'),
         new OA\Property(property: 'statusNovo', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'EM_EXECUCAO'),
-        new OA\Property(property: 'mecanicoId', type: 'integer', nullable: true, example: 7),
+        new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', nullable: true, example: '22222222-2222-4222-8222-222222222222'),
         new OA\Property(property: 'duracaoSegundos', type: 'integer', nullable: true, example: 840, description: 'Tempo que a OS ficou no status anterior'),
         new OA\Property(property: 'observacao', type: 'string', nullable: true, example: 'Troca de pastilhas iniciada'),
         new OA\Property(property: 'traceId', type: 'string', nullable: true, example: '0af7651916cd43dd8448eb211c80319c'),
@@ -34,7 +34,7 @@ use OpenApi\Attributes as OA;
 )]
 #[OA\Schema(
     schema: 'Erro',
-    properties: [new OA\Property(property: 'message', type: 'string', example: 'A OS #123 já está na fila de execução.')]
+    properties: [new OA\Property(property: 'message', type: 'string', example: 'A OS 11111111-1111-4111-8111-111111111111 já está na fila de execução.')]
 )]
 #[OA\Tag(name: 'Fila de execução', description: 'OS aprovadas esperando um mecânico (Redis)')]
 #[OA\Tag(name: 'Timeline', description: 'Diagnóstico e reparo de cada OS (MongoDB)')]
@@ -72,7 +72,7 @@ class ExecucaoSwagger
             required: true,
             content: new OA\JsonContent(
                 required: ['osId'],
-                properties: [new OA\Property(property: 'osId', type: 'integer', example: 123)]
+                properties: [new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111')]
             )
         ),
         responses: [
@@ -92,7 +92,7 @@ class ExecucaoSwagger
             required: true,
             content: new OA\JsonContent(
                 required: ['mecanicoId'],
-                properties: [new OA\Property(property: 'mecanicoId', type: 'integer', example: 7)]
+                properties: [new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', example: '22222222-2222-4222-8222-222222222222')]
             )
         ),
         responses: [
@@ -108,7 +108,7 @@ class ExecucaoSwagger
         path: '/api/execucao/fila/{osId}',
         tags: ['Fila de execução'],
         summary: 'Remove uma OS da fila',
-        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'integer', example: 123))],
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
         responses: [
             new OA\Response(response: 204, description: 'Removida'),
             new OA\Response(response: 404, description: 'OS não está na fila', content: new OA\JsonContent(ref: '#/components/schemas/Erro')),
@@ -120,7 +120,7 @@ class ExecucaoSwagger
         path: '/api/execucao/os/{osId}/timeline',
         tags: ['Timeline'],
         summary: 'Histórico de diagnóstico e reparo da OS, do mais antigo ao mais recente',
-        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'integer', example: 123))],
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
         responses: [
             new OA\Response(
                 response: 200,
@@ -136,13 +136,13 @@ class ExecucaoSwagger
         path: '/api/execucao/os/{osId}/diagnostico',
         tags: ['Timeline'],
         summary: 'Inicia o diagnóstico (RECEBIDA → EM_DIAGNOSTICO)',
-        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'integer', example: 123))],
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
         requestBody: new OA\RequestBody(
             required: true,
             content: new OA\JsonContent(
                 required: ['mecanicoId'],
                 properties: [
-                    new OA\Property(property: 'mecanicoId', type: 'integer', example: 7),
+                    new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', example: '22222222-2222-4222-8222-222222222222'),
                     new OA\Property(property: 'observacao', type: 'string', nullable: true, example: 'Cliente relata barulho na frente'),
                 ]
             )
@@ -158,13 +158,13 @@ class ExecucaoSwagger
         path: '/api/execucao/os/{osId}/notas',
         tags: ['Timeline'],
         summary: 'Registra uma anotação durante o diagnóstico ou o reparo',
-        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'integer', example: 123))],
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
         requestBody: new OA\RequestBody(
             required: true,
             content: new OA\JsonContent(
                 required: ['mecanicoId', 'texto'],
                 properties: [
-                    new OA\Property(property: 'mecanicoId', type: 'integer', example: 7),
+                    new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', example: '22222222-2222-4222-8222-222222222222'),
                     new OA\Property(property: 'texto', type: 'string', example: 'Pastilhas dianteiras no limite, discos ok'),
                 ]
             )
@@ -181,13 +181,13 @@ class ExecucaoSwagger
         path: '/api/execucao/os/{osId}/finalizar',
         tags: ['Timeline'],
         summary: 'Encerra o reparo (EM_EXECUCAO → FINALIZADA) e libera o mecânico',
-        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'integer', example: 123))],
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
         requestBody: new OA\RequestBody(
             required: true,
             content: new OA\JsonContent(
                 required: ['mecanicoId'],
                 properties: [
-                    new OA\Property(property: 'mecanicoId', type: 'integer', example: 7),
+                    new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', example: '22222222-2222-4222-8222-222222222222'),
                     new OA\Property(property: 'observacao', type: 'string', nullable: true, example: 'Pastilhas trocadas e testadas'),
                 ]
             )

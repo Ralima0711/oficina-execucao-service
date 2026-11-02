@@ -22,13 +22,13 @@ class FilaExecucaoService
         private TimelineRepositoryInterface $timeline,
     ) {}
 
-    public function enfileirar(int $osId): ItemFila
+    public function enfileirar(string $osId): ItemFila
     {
         return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId) {
             $status = $this->timeline->ultimoEventoDeEstado($osId)?->statusNovo;
 
             if ($status === StatusExecucao::EM_EXECUCAO || $status === StatusExecucao::FINALIZADA) {
-                throw new ConflitoException("A OS #{$osId} já está {$status->value} e não pode voltar para a fila.");
+                throw new ConflitoException("A OS {$osId} já está {$status->value} e não pode voltar para a fila.");
             }
 
             $item = $this->fila->enfileirar($osId, CarbonImmutable::now('UTC')->toDateTimeImmutable());
@@ -44,7 +44,7 @@ class FilaExecucaoService
      * Mecânico puxa a próxima OS: ela sai da fila, o mecânico fica ocupado com ela
      * e a timeline ganha EXECUCAO_INICIADA. Devolve null com a fila vazia.
      */
-    public function proxima(int $mecanicoId): ?EventoTimeline
+    public function proxima(string $mecanicoId): ?EventoTimeline
     {
         return Tracing::executar('FilaExecucaoService::proxima', ['os.mecanico_id' => $mecanicoId], function () use ($mecanicoId) {
             $item = $this->fila->proxima($mecanicoId);
@@ -94,11 +94,11 @@ class FilaExecucaoService
         return $this->fila->listar();
     }
 
-    public function remover(int $osId): void
+    public function remover(string $osId): void
     {
         Tracing::executar('FilaExecucaoService::remover', ['os.id' => $osId], function () use ($osId) {
             if (!$this->fila->remover($osId)) {
-                throw new NaoEncontradoException("A OS #{$osId} não está na fila de execução.");
+                throw new NaoEncontradoException("A OS {$osId} não está na fila de execução.");
             }
 
             Log::info('os_removida_da_fila', ['os.id' => $osId]);

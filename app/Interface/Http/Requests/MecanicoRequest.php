@@ -20,7 +20,7 @@ class MecanicoRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'mecanicoId' => ['required', 'integer', 'min:1'],
+            'mecanicoId' => ['required', 'uuid'],
             'observacao' => ['nullable', 'string', 'max:1000'],
         ];
     }

@@ -11,10 +11,10 @@ interface TimelineRepositoryInterface
     /**
      * @return EventoTimeline[] do mais antigo para o mais recente
      */
-    public function porOs(int $osId): array;
+    public function porOs(string $osId): array;
 
     /** Último evento que mudou o estado da OS (ignora notas). */
-    public function ultimoEventoDeEstado(int $osId): ?EventoTimeline;
+    public function ultimoEventoDeEstado(string $osId): ?EventoTimeline;
 
     /**
      * Tempo médio que as OS ficaram em cada status, a partir do status que
