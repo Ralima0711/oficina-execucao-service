@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Oficina Mecanica — API Assincrona da Saga
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contrato dos eventos e comandos trocados entre os tres microsservicos
     do Tech Challenge SOAT Fase 4 (Grupo 77).
@@ -81,6 +81,8 @@ channels:
     messages:
       orcamentoGerado:
         $ref: '#/components/messages/OrcamentoGerado'
+      orcamentoFalhou:
+        $ref: '#/components/messages/OrcamentoFalhou'
       orcamentoDecidido:
         $ref: '#/components/messages/OrcamentoDecidido'
       aprovacaoExpirada:
@@ -89,6 +91,8 @@ channels:
         $ref: '#/components/messages/PagamentoResolvido'
       execucaoAtualizada:
         $ref: '#/components/messages/ExecucaoAtualizada'
+      sagaEncerrada:
+        $ref: '#/components/messages/SagaEncerrada'
 
 operations:
 
@@ -164,7 +168,7 @@ components:
         - $ref: '#/components/messageTraits/envelope'
       payload:
         type: object
-        required: [osId, clienteId, veiculo, descricaoProblema]
+        required: [osId, clienteId, veiculo, descricaoProblema, itensDiagnosticados]
         properties:
           osId: { type: string, format: uuid }
           clienteId: { type: string, format: uuid }
@@ -178,6 +182,12 @@ components:
           descricaoProblema: { type: string }
           itensDiagnosticados:
             type: array
+            minItems: 1
+            description: |
+              v1.1: obrigatorio, com ao menos um item. Sem itens o orcamento sairia
+              com valorTotal 0, a cobranca recusaria e a OS ficaria presa em
+              AGUARDANDO_PAGAMENTO. Diagnostico sem nada a orcar publica
+              OrcamentoFalhou com motivo sem_itens_a_orcar.
             items: { $ref: '#/components/schemas/ItemDiagnosticado' }
 
     OrcamentoGerado:
@@ -187,11 +197,15 @@ components:
         - $ref: '#/components/messageTraits/envelope'
       payload:
         type: object
-        required: [osId, orcamentoId, valorTotal, moeda, validoAte]
+        required: [osId, orcamentoId, valorTotal, moeda, validoAte, itens]
         properties:
           osId: { type: string, format: uuid }
           orcamentoId: { type: string, format: uuid }
-          valorTotal: { type: number, format: double }
+          valorTotal:
+            type: number
+            format: double
+            exclusiveMinimum: 0
+            description: 'v1.1: sempre maior que zero. Zero seria OrcamentoFalhou.'
           moeda: { type: string, enum: [BRL] }
           validoAte:
             type: string
@@ -199,7 +213,30 @@ components:
             description: Sete dias apos a geracao. Expirar cancela a OS.
           itens:
             type: array
+            minItems: 1
             items: { $ref: '#/components/schemas/ItemOrcado' }
+
+    OrcamentoFalhou:
+      name: OrcamentoFalhou
+      title: Nao foi possivel gerar o orcamento
+      description: |
+        v1.1. Separado de OrcamentoDecidido: este e falha do Billing ao GERAR,
+        aquele e a decisao do CLIENTE sobre um orcamento que existe. Na v1.0 os
+        dois chegavam como orcamento.recusado e o orquestrador nao tinha como
+        distinguir sem ler o campo motivo, que e texto livre.
+        Nao carrega orcamentoId: nenhum orcamento foi criado.
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, motivo, ocorridoEm]
+        properties:
+          osId: { type: string, format: uuid }
+          motivo:
+            type: string
+            enum: [sem_itens_a_orcar, item_fora_do_catalogo, erro_interno]
+          detalhe: { type: string }
+          ocorridoEm: { type: string, format: date-time }
 
     OrcamentoDecidido:
       name: OrcamentoDecidido
@@ -227,7 +264,7 @@ components:
         - $ref: '#/components/messageTraits/envelope'
       payload:
         type: object
-        required: [osId, orcamentoId]
+        required: [osId, orcamentoId, expirouEm]
         properties:
           osId: { type: string, format: uuid }
           orcamentoId: { type: string, format: uuid }
@@ -277,7 +314,16 @@ components:
         properties:
           osId: { type: string, format: uuid }
           orcamentoId: { type: string, format: uuid }
-          prioridade: { type: integer, default: 1 }
+          prioridade:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 1
+            description: |
+              v1.1: 1 a 5, MAIOR e mais urgente, padrao 1. Mesma prioridade,
+              vale a ordem de chegada. Valor fora da faixa e AJUSTADO a faixa e
+              registrado em log — recusar o comando mandaria a mensagem para a
+              DLQ e a saga esperaria para sempre (regra 6 da Parte 5).
           itens:
             type: array
             items: { $ref: '#/components/schemas/ItemDiagnosticado' }
@@ -300,10 +346,50 @@ components:
             type: string
             description: Preenchido apenas na falha.
 
+    SagaEncerrada:
+      name: SagaEncerrada
+      title: OS cancelada ou finalizada
+      description: |
+        v1.1. Routing keys os.cancelada e os.finalizada. Evento de ANUNCIO:
+        fecha a saga e alimenta o read model. Nenhum participante age sobre ele.
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, sagaId, estadoFinal, ocorridoEm]
+        properties:
+          osId: { type: string, format: uuid }
+          sagaId: { type: string, format: uuid }
+          estadoFinal: { type: string, enum: [CANCELADA, FINALIZADA] }
+          motivo:
+            type: string
+            description: Preenchido apenas em os.cancelada.
+          ocorridoEm: { type: string, format: date-time }
+
+    CancelarOS:
+      name: CancelarOS
+      title: Cancelar a OS (comando interno do OS Service)
+      description: |
+        v1.1. NAO tem fila: o orquestrador vive dentro do OS Service e cancela o
+        proprio agregado. Esta aqui porque o passo e registrado no estado da saga
+        e no log, e e o que a demonstracao da compensacao mostra.
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        type: object
+        required: [osId, sagaId, motivo]
+        properties:
+          osId: { type: string, format: uuid }
+          sagaId: { type: string, format: uuid }
+          motivo: { $ref: '#/components/schemas/MotivoCompensacao' }
+
     Compensacao:
       name: Compensacao
       title: Comando de compensacao
-      description: Formato comum a AnularOrcamento, EstornarPagamento e CancelarExecucao.
+      description: |
+        Formato comum a AnularOrcamento, EstornarPagamento e CancelarExecucao.
+        A compensacao desfaz na ordem inversa dos passos, e cada comando e
+        idempotente. Compensacao que nao se aplica e PULADA, nao e erro.
       traits:
         - $ref: '#/components/messageTraits/envelope'
       payload:
@@ -313,15 +399,22 @@ components:
           osId: { type: string, format: uuid }
           orcamentoId: { type: string, format: uuid }
           pagamentoId: { type: string, format: uuid }
-          motivo:
-            type: string
-            enum:
-              - pagamento_recusado
-              - aprovacao_expirada
-              - execucao_falhou
-              - cancelado_pelo_cliente
+          motivo: { $ref: '#/components/schemas/MotivoCompensacao' }
 
   schemas:
+    MotivoCompensacao:
+      type: string
+      description: |
+        v1.1: cancelado_pelo_cliente foi REMOVIDO. Estava no enum sem operacao,
+        evento nem regra de elegibilidade por tras. Cancelamento voluntario pelo
+        cliente esta fora do escopo da Fase 4.
+      enum:
+        - orcamento_falhou
+        - orcamento_recusado
+        - aprovacao_expirada
+        - pagamento_recusado
+        - execucao_falhou
+
     ItemDiagnosticado:
       type: object
       required: [descricao, tipo, quantidade]
