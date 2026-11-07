@@ -14,7 +14,8 @@ class EnfileirarRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'osId' => ['required', 'integer', 'min:1'],
+            'osId'       => ['required', 'uuid'],
+            'prioridade' => ['sometimes', 'integer', 'between:1,5'],
         ];
     }
 }

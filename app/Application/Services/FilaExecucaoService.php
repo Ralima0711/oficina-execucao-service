@@ -13,6 +13,7 @@ use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Observability\Tracing;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 
 class FilaExecucaoService
@@ -22,19 +23,39 @@ class FilaExecucaoService
         private TimelineRepositoryInterface $timeline,
     ) {}
 
-    public function enfileirar(int $osId): ItemFila
+    public function enfileirar(string $osId, int $prioridade = ItemFila::PRIORIDADE_MINIMA): ItemFila
     {
-        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId) {
+        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId, $prioridade) {
+            if ($prioridade < ItemFila::PRIORIDADE_MINIMA || $prioridade > ItemFila::PRIORIDADE_MAXIMA) {
+                throw new \DomainException(sprintf(
+                    'A prioridade deve estar entre %d e %d.',
+                    ItemFila::PRIORIDADE_MINIMA,
+                    ItemFila::PRIORIDADE_MAXIMA
+                ));
+            }
+
             $status = $this->timeline->ultimoEventoDeEstado($osId)?->statusNovo;
 
             if ($status === StatusExecucao::EM_EXECUCAO || $status === StatusExecucao::FINALIZADA) {
-                throw new ConflitoException("A OS #{$osId} já está {$status->value} e não pode voltar para a fila.");
+                throw new ConflitoException("A OS {$osId} já está {$status->value} e não pode voltar para a fila.");
             }
 
-            $item = $this->fila->enfileirar($osId, CarbonImmutable::now('UTC')->toDateTimeImmutable());
+            // Um execucaoId por OS, desde que ela entra na fila: todo evento da execução (inclusive
+            // uma falha antes de o mecânico puxar a OS) carrega o mesmo id.
+            $item = $this->fila->enfileirar(
+                $osId,
+                $prioridade,
+                (string) Str::uuid(),
+                CarbonImmutable::now('UTC')->toDateTimeImmutable()
+            );
             $item = $item->comPosicao($this->fila->posicao($osId));
 
-            Log::info('os_enfileirada', ['os.id' => $osId, 'fila.posicao' => $item->posicao]);
+            Log::info('os_enfileirada', [
+                'os.id'           => $osId,
+                'execucao.id'     => $item->execucaoId,
+                'fila.prioridade' => $item->prioridade,
+                'fila.posicao'    => $item->posicao,
+            ]);
 
             return $item;
         });
@@ -44,7 +65,7 @@ class FilaExecucaoService
      * Mecânico puxa a próxima OS: ela sai da fila, o mecânico fica ocupado com ela
      * e a timeline ganha EXECUCAO_INICIADA. Devolve null com a fila vazia.
      */
-    public function proxima(int $mecanicoId): ?EventoTimeline
+    public function proxima(string $mecanicoId): ?EventoTimeline
     {
         return Tracing::executar('FilaExecucaoService::proxima', ['os.mecanico_id' => $mecanicoId], function () use ($mecanicoId) {
             $item = $this->fila->proxima($mecanicoId);
@@ -66,10 +87,17 @@ class FilaExecucaoService
                 observacao: null,
                 traceId: Tracing::traceIdAtual(),
                 ocorridoEm: $agora,
+                execucaoId: $item->execucaoId ?? (string) Str::uuid(),
             );
 
             try {
                 $this->timeline->registrar($evento);
+            } catch (ConflitoException $e) {
+                // A OS já tinha esse evento (a execução já começou por outro caminho): devolvê-la
+                // travaria a fila nela. Descarta o item e solta o mecânico.
+                $this->fila->concluir($mecanicoId, $item->osId);
+
+                throw $e;
             } catch (\Throwable $e) {
                 // Sem o evento na timeline a OS não pode sumir da fila: desfaz a retirada.
                 $this->fila->devolver($item, $mecanicoId);
@@ -79,6 +107,7 @@ class FilaExecucaoService
 
             Log::info('os_transicao_status', [
                 'os.id'               => $evento->osId,
+                'execucao.id'         => $evento->execucaoId,
                 'os.status_anterior'  => $evento->statusAnterior->value,
                 'os.status_novo'      => $evento->statusNovo->value,
                 'os.duracao_segundos' => $evento->duracaoSegundos,
@@ -94,11 +123,11 @@ class FilaExecucaoService
         return $this->fila->listar();
     }
 
-    public function remover(int $osId): void
+    public function remover(string $osId): void
     {
         Tracing::executar('FilaExecucaoService::remover', ['os.id' => $osId], function () use ($osId) {
             if (!$this->fila->remover($osId)) {
-                throw new NaoEncontradoException("A OS #{$osId} não está na fila de execução.");
+                throw new NaoEncontradoException("A OS {$osId} não está na fila de execução.");
             }
 
             Log::info('os_removida_da_fila', ['os.id' => $osId]);

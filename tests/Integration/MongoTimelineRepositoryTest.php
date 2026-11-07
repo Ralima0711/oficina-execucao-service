@@ -3,11 +3,13 @@
 namespace Tests\Integration;
 
 use App\Domain\Execucao\Entities\EventoTimeline;
+use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Persistence\Mongo\MongoTimelineRepository;
 use MongoDB\Database;
 use Tests\TestCase;
+use Tests\Support\Ids;
 
 /**
  * Contra um MongoDB de verdade (banco `execucao_test`). Roda dentro do compose:
@@ -60,39 +62,40 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:00'));
         $this->repo->registrar($this->evento(2, TipoEvento::DIAGNOSTICO_INICIADO, '14:05:00'));
 
-        $eventos = $this->repo->porOs(1);
+        $eventos = $this->repo->porOs(Ids::os(1));
 
         $this->assertSame(
             [TipoEvento::DIAGNOSTICO_INICIADO, TipoEvento::EXECUCAO_INICIADA],
             array_map(fn (EventoTimeline $e) => $e->tipo, $eventos)
         );
-        $this->assertSame([], $this->repo->porOs(404));
+        $this->assertSame([], $this->repo->porOs(Ids::os(404)));
     }
 
     public function test_preserva_todos_os_campos_do_evento(): void
     {
         $original = new EventoTimeline(
-            osId: 5,
+            osId: Ids::os(5),
             tipo: TipoEvento::EXECUCAO_FINALIZADA,
             statusAnterior: StatusExecucao::EM_EXECUCAO,
             statusNovo: StatusExecucao::FINALIZADA,
-            mecanicoId: 7,
+            mecanicoId: Ids::mecanico(7),
             duracaoSegundos: 5400,
             observacao: 'pastilhas trocadas',
             traceId: '0af7651916cd43dd8448eb211c80319c',
             ocorridoEm: new \DateTimeImmutable('2026-10-27 15:35:00.456', new \DateTimeZone('UTC')),
+            execucaoId: '44444444-4444-4444-8444-444444444444',
         );
 
         $this->repo->registrar($original);
 
-        $this->assertSame($original->toArray(), $this->repo->porOs(5)[0]->toArray());
+        $this->assertSame($original->toArray(), $this->repo->porOs(Ids::os(5))[0]->toArray());
     }
 
     public function test_nota_volta_sem_status_nem_duracao(): void
     {
-        $this->repo->registrar(new EventoTimeline(5, TipoEvento::NOTA, null, null, 7, null, 'anotação', null, new \DateTimeImmutable()));
+        $this->repo->registrar(new EventoTimeline(Ids::os(5), TipoEvento::NOTA, null, null, Ids::mecanico(7), null, 'anotação', null, new \DateTimeImmutable()));
 
-        $nota = $this->repo->porOs(5)[0];
+        $nota = $this->repo->porOs(Ids::os(5))[0];
 
         $this->assertNull($nota->statusNovo);
         $this->assertNull($nota->duracaoSegundos);
@@ -104,10 +107,10 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:00'));
         $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:30:00'));
 
-        $ultimo = $this->repo->ultimoEventoDeEstado(1);
+        $ultimo = $this->repo->ultimoEventoDeEstado(Ids::os(1));
 
         $this->assertSame(TipoEvento::DIAGNOSTICO_INICIADO, $ultimo->tipo);
-        $this->assertNull($this->repo->ultimoEventoDeEstado(404));
+        $this->assertNull($this->repo->ultimoEventoDeEstado(Ids::os(404)));
     }
 
     public function test_tempo_medio_por_status(): void
@@ -138,6 +141,99 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->assertContains('tipo_ocorrido', $nomes);
     }
 
+    public function test_o_indice_unico_barra_a_mesma_transicao_duas_vezes_na_mesma_os(): void
+    {
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FINALIZADA, '15:00:00', StatusExecucao::EM_EXECUCAO, 60));
+
+        try {
+            $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FINALIZADA, '15:00:01', StatusExecucao::EM_EXECUCAO, 61));
+            $this->fail('A segunda transição igual na mesma OS deveria conflitar.');
+        } catch (ConflitoException $e) {
+            $this->assertSame('A OS ' . Ids::os(1) . ' já tem o evento EXECUCAO_FINALIZADA.', $e->getMessage());
+        }
+
+        $this->assertCount(1, $this->repo->porOs(Ids::os(1)));
+    }
+
+    public function test_notas_se_repetem_e_outras_os_podem_ter_a_mesma_transicao(): void
+    {
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:00:00'));
+        $this->repo->registrar($this->evento(1, TipoEvento::NOTA, '14:00:01'));
+        $this->repo->registrar($this->evento(1, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:02'));
+        $this->repo->registrar($this->evento(2, TipoEvento::DIAGNOSTICO_INICIADO, '14:00:03'));
+
+        $this->assertCount(3, $this->repo->porOs(Ids::os(1)));
+        $this->assertCount(1, $this->repo->porOs(Ids::os(2)));
+    }
+
+    public function test_processos_simultaneos_gravando_a_mesma_transicao_geram_um_so_evento(): void
+    {
+        $this->repo->criarIndices();
+
+        // Cada processo PHP tem a sua conexão e grava a mesma transição da mesma OS:
+        // exit 0 = gravou, 1 = conflito, 2 = erro inesperado.
+        $codigo = <<<'PHP'
+require getcwd() . '/vendor/autoload.php';
+$db = (new MongoDB\Client(getenv('MONGO_URI') ?: 'mongodb://127.0.0.1:27017'))->selectDatabase('execucao_test');
+$repo = new App\Infrastructure\Persistence\Mongo\MongoTimelineRepository($db);
+try {
+    $repo->registrar(new App\Domain\Execucao\Entities\EventoTimeline(
+        getenv('OS_ID'),
+        App\Domain\Execucao\ValueObjects\TipoEvento::EXECUCAO_FINALIZADA,
+        App\Domain\Execucao\ValueObjects\StatusExecucao::EM_EXECUCAO,
+        App\Domain\Execucao\ValueObjects\StatusExecucao::FINALIZADA,
+        null, 10, null, null, new DateTimeImmutable()
+    ));
+    exit(0);
+} catch (App\Domain\Execucao\Exceptions\ConflitoException) {
+    exit(1);
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage());
+    exit(2);
+}
+PHP;
+
+        $processos = [];
+        for ($i = 0; $i < 8; $i++) {
+            $processos[] = proc_open(
+                [PHP_BINARY, '-r', $codigo],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                base_path(),
+                array_merge(getenv(), ['OS_ID' => Ids::os(7)])
+            );
+        }
+
+        $saidas = [];
+        foreach ($processos as $processo) {
+            do {
+                $status = proc_get_status($processo);
+                if ($status['running']) {
+                    usleep(5000);
+                }
+            } while ($status['running']);
+
+            // O exitcode só é confiável na primeira leitura depois que o processo termina.
+            $saidas[] = $status['exitcode'];
+            proc_close($processo);
+        }
+
+        $this->assertSame(
+            ['gravou' => 1, 'conflito' => 7, 'erro' => 0],
+            [
+                'gravou'   => count(array_keys($saidas, 0, true)),
+                'conflito' => count(array_keys($saidas, 1, true)),
+                'erro'     => count(array_keys($saidas, 2, true)),
+            ],
+            'Exatamente um processo grava; os outros recebem conflito. Saídas: ' . implode(',', $saidas)
+        );
+        $this->assertCount(1, $this->repo->porOs(Ids::os(7)));
+    }
+
     private function evento(
         int $osId,
         TipoEvento $tipo,
@@ -146,11 +242,11 @@ class MongoTimelineRepositoryTest extends TestCase
         ?int $duracao = null,
     ): EventoTimeline {
         return new EventoTimeline(
-            $osId,
+            Ids::os($osId),
             $tipo,
             $anterior,
             null,
-            7,
+            Ids::mecanico(7),
             $duracao,
             null,
             null,

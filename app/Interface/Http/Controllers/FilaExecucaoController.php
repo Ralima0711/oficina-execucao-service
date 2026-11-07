@@ -3,6 +3,7 @@
 namespace App\Interface\Http\Controllers;
 
 use App\Application\Services\FilaExecucaoService;
+use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\NaoEncontradoException;
 use App\Interface\Http\Requests\EnfileirarRequest;
 use App\Interface\Http\Requests\MecanicoRequest;
@@ -22,12 +23,17 @@ class FilaExecucaoController extends Controller
 
     public function store(EnfileirarRequest $request): JsonResponse
     {
-        return response()->json($this->service->enfileirar($request->integer('osId')), 201);
+        $item = $this->service->enfileirar(
+            $request->string('osId')->toString(),
+            $request->integer('prioridade', ItemFila::PRIORIDADE_MINIMA)
+        );
+
+        return response()->json($item, 201);
     }
 
     public function proxima(MecanicoRequest $request): JsonResponse
     {
-        $evento = $this->service->proxima($request->integer('mecanicoId'));
+        $evento = $this->service->proxima($request->string('mecanicoId')->toString());
 
         if ($evento === null) {
             throw new NaoEncontradoException('A fila de execução está vazia.');
@@ -36,7 +42,7 @@ class FilaExecucaoController extends Controller
         return response()->json($evento);
     }
 
-    public function destroy(int $osId): JsonResponse
+    public function destroy(string $osId): JsonResponse
     {
         $this->service->remover($osId);
 

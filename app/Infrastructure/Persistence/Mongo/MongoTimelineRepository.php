@@ -3,6 +3,7 @@
 namespace App\Infrastructure\Persistence\Mongo;
 
 use App\Domain\Execucao\Entities\EventoTimeline;
+use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
@@ -16,22 +17,35 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
 
     public function __construct(private Database $database) {}
 
+    /**
+     * @throws ConflitoException se a OS já tem esse evento de transição (cada transição
+     *                           acontece uma vez por OS; o índice único barra a corrida)
+     */
     public function registrar(EventoTimeline $evento): void
     {
-        $this->colecao()->insertOne([
-            'osId'            => $evento->osId,
-            'tipo'            => $evento->tipo->value,
-            'statusAnterior'  => $evento->statusAnterior?->value,
-            'statusNovo'      => $evento->statusNovo?->value,
-            'mecanicoId'      => $evento->mecanicoId,
-            'duracaoSegundos' => $evento->duracaoSegundos,
-            'observacao'      => $evento->observacao,
-            'traceId'         => $evento->traceId,
-            'ocorridoEm'      => new UTCDateTime((int) $evento->ocorridoEm->format('Uv')),
-        ]);
+        try {
+            $this->colecao()->insertOne([
+                'osId'            => $evento->osId,
+                'execucaoId'      => $evento->execucaoId,
+                'tipo'            => $evento->tipo->value,
+                'statusAnterior'  => $evento->statusAnterior?->value,
+                'statusNovo'      => $evento->statusNovo?->value,
+                'mecanicoId'      => $evento->mecanicoId,
+                'duracaoSegundos' => $evento->duracaoSegundos,
+                'observacao'      => $evento->observacao,
+                'traceId'         => $evento->traceId,
+                'ocorridoEm'      => new UTCDateTime((int) $evento->ocorridoEm->format('Uv')),
+            ]);
+        } catch (\Throwable $e) {
+            if ($evento->tipo->mudaEstado() && ChaveDuplicada::e($e)) {
+                throw new ConflitoException("A OS {$evento->osId} já tem o evento {$evento->tipo->value}.");
+            }
+
+            throw $e;
+        }
     }
 
-    public function porOs(int $osId): array
+    public function porOs(string $osId): array
     {
         $cursor = $this->colecao()->find(
             ['osId' => $osId],
@@ -46,7 +60,7 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
         return $eventos;
     }
 
-    public function ultimoEventoDeEstado(int $osId): ?EventoTimeline
+    public function ultimoEventoDeEstado(string $osId): ?EventoTimeline
     {
         $documento = $this->colecao()->findOne(
             ['osId' => $osId, 'tipo' => ['$ne' => TipoEvento::NOTA->value]],
@@ -88,7 +102,25 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             ['key' => ['osId' => 1, 'ocorridoEm' => 1], 'name' => 'os_ocorrido'],
             // Métricas por tipo de evento ao longo do tempo.
             ['key' => ['tipo' => 1, 'ocorridoEm' => 1], 'name' => 'tipo_ocorrido'],
+            // Cada transição acontece uma vez por OS. Duas requisições simultâneas passam juntas
+            // pela checagem de status (ler e depois gravar não é atômico); este índice barra a
+            // segunda. Notas ficam de fora: podem se repetir.
+            [
+                'key'                     => ['osId' => 1, 'tipo' => 1],
+                'name'                    => 'os_tipo_estado_unico',
+                'unique'                  => true,
+                'partialFilterExpression' => ['tipo' => ['$in' => $this->tiposDeTransicao()]],
+            ],
         ]);
+    }
+
+    /** @return string[] */
+    private function tiposDeTransicao(): array
+    {
+        return array_values(array_map(
+            fn (TipoEvento $tipo) => $tipo->value,
+            array_filter(TipoEvento::cases(), fn (TipoEvento $tipo) => $tipo->mudaEstado())
+        ));
     }
 
     private function colecao(): Collection
@@ -104,15 +136,16 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             ->setTimezone(new \DateTimeZone('UTC'));
 
         return new EventoTimeline(
-            osId: (int) $d['osId'],
+            osId: (string) $d['osId'],
             tipo: TipoEvento::from($d['tipo']),
             statusAnterior: isset($d['statusAnterior']) ? StatusExecucao::from($d['statusAnterior']) : null,
             statusNovo: isset($d['statusNovo']) ? StatusExecucao::from($d['statusNovo']) : null,
-            mecanicoId: isset($d['mecanicoId']) ? (int) $d['mecanicoId'] : null,
+            mecanicoId: isset($d['mecanicoId']) ? (string) $d['mecanicoId'] : null,
             duracaoSegundos: isset($d['duracaoSegundos']) ? (int) $d['duracaoSegundos'] : null,
             observacao: $d['observacao'] ?? null,
             traceId: $d['traceId'] ?? null,
             ocorridoEm: $ocorridoEm,
+            execucaoId: $d['execucaoId'] ?? null,
         );
     }
 }

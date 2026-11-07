@@ -20,7 +20,7 @@ class ExecucaoService
         private FilaExecucaoRepositoryInterface $fila,
     ) {}
 
-    public function iniciarDiagnostico(int $osId, int $mecanicoId, ?string $observacao = null): EventoTimeline
+    public function iniciarDiagnostico(string $osId, string $mecanicoId, ?string $observacao = null): EventoTimeline
     {
         return Tracing::executar('ExecucaoService::iniciarDiagnostico', ['os.id' => $osId, 'os.mecanico_id' => $mecanicoId], function () use ($osId, $mecanicoId, $observacao) {
             $atual = $this->statusAtual($osId);
@@ -41,7 +41,7 @@ class ExecucaoService
         });
     }
 
-    public function registrarNota(int $osId, int $mecanicoId, string $texto): EventoTimeline
+    public function registrarNota(string $osId, string $mecanicoId, string $texto): EventoTimeline
     {
         return Tracing::executar('ExecucaoService::registrarNota', ['os.id' => $osId, 'os.mecanico_id' => $mecanicoId], function () use ($osId, $mecanicoId, $texto) {
             $ultimo = $this->timeline->ultimoEventoDeEstado($osId);
@@ -71,7 +71,7 @@ class ExecucaoService
         });
     }
 
-    public function finalizar(int $osId, int $mecanicoId, ?string $observacao = null): EventoTimeline
+    public function finalizar(string $osId, string $mecanicoId, ?string $observacao = null): EventoTimeline
     {
         return Tracing::executar('ExecucaoService::finalizar', ['os.id' => $osId, 'os.mecanico_id' => $mecanicoId], function () use ($osId, $mecanicoId, $observacao) {
             $ultimo = $this->timeline->ultimoEventoDeEstado($osId);
@@ -95,6 +95,7 @@ class ExecucaoService
                 max(0, $agora->getTimestamp() - $ultimo->ocorridoEm->getTimestamp()),
                 $observacao,
                 $agora,
+                $ultimo->execucaoId,
             );
 
             // Libera o mecânico para puxar a próxima OS. Idempotente.
@@ -105,12 +106,12 @@ class ExecucaoService
     }
 
     /** @return EventoTimeline[] */
-    public function timeline(int $osId): array
+    public function timeline(string $osId): array
     {
         $eventos = $this->timeline->porOs($osId);
 
         if ($eventos === []) {
-            throw new NaoEncontradoException("A OS #{$osId} não tem eventos na timeline.");
+            throw new NaoEncontradoException("A OS {$osId} não tem eventos na timeline.");
         }
 
         return $eventos;
@@ -122,27 +123,28 @@ class ExecucaoService
         return $this->timeline->tempoMedioPorStatus();
     }
 
-    private function statusAtual(int $osId): StatusExecucao
+    private function statusAtual(string $osId): StatusExecucao
     {
         return $this->timeline->ultimoEventoDeEstado($osId)?->statusNovo ?? StatusExecucao::RECEBIDA;
     }
 
-    private function exigirMecanicoResponsavel(int $osId, ?EventoTimeline $ultimo, int $mecanicoId): void
+    private function exigirMecanicoResponsavel(string $osId, ?EventoTimeline $ultimo, string $mecanicoId): void
     {
         if ($ultimo?->mecanicoId !== null && $ultimo->mecanicoId !== $mecanicoId) {
-            throw new ConflitoException("A OS #{$osId} está com o mecânico #{$ultimo->mecanicoId}.");
+            throw new ConflitoException("A OS {$osId} está com o mecânico {$ultimo->mecanicoId}.");
         }
     }
 
     private function registrarTransicao(
-        int $osId,
+        string $osId,
         TipoEvento $tipo,
         StatusExecucao $de,
         StatusExecucao $para,
-        int $mecanicoId,
+        string $mecanicoId,
         ?int $duracaoSegundos,
         ?string $observacao,
         ?\DateTimeImmutable $ocorridoEm = null,
+        ?string $execucaoId = null,
     ): EventoTimeline {
         $evento = new EventoTimeline(
             osId: $osId,
@@ -154,12 +156,14 @@ class ExecucaoService
             observacao: $observacao,
             traceId: Tracing::traceIdAtual(),
             ocorridoEm: $ocorridoEm ?? CarbonImmutable::now('UTC')->toDateTimeImmutable(),
+            execucaoId: $execucaoId,
         );
 
         $this->timeline->registrar($evento);
 
         Log::info('os_transicao_status', [
             'os.id'               => $osId,
+            'execucao.id'         => $execucaoId,
             'os.status_anterior'  => $de->value,
             'os.status_novo'      => $para->value,
             'os.duracao_segundos' => $duracaoSegundos,
