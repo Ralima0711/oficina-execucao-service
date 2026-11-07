@@ -8,6 +8,7 @@ use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Exceptions\NaoEncontradoException;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Observability\Tracing;
@@ -21,11 +22,12 @@ class FilaExecucaoService
     public function __construct(
         private FilaExecucaoRepositoryInterface $fila,
         private TimelineRepositoryInterface $timeline,
+        private EventosDeExecucao $eventos,
     ) {}
 
-    public function enfileirar(string $osId, int $prioridade = ItemFila::PRIORIDADE_MINIMA): ItemFila
+    public function enfileirar(string $osId, int $prioridade = ItemFila::PRIORIDADE_MINIMA, ?ContextoSaga $saga = null): ItemFila
     {
-        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId, $prioridade) {
+        return Tracing::executar('FilaExecucaoService::enfileirar', ['os.id' => $osId], function () use ($osId, $prioridade, $saga) {
             if ($prioridade < ItemFila::PRIORIDADE_MINIMA || $prioridade > ItemFila::PRIORIDADE_MAXIMA) {
                 throw new \DomainException(sprintf(
                     'A prioridade deve estar entre %d e %d.',
@@ -46,13 +48,15 @@ class FilaExecucaoService
                 $osId,
                 $prioridade,
                 (string) Str::uuid(),
-                CarbonImmutable::now('UTC')->toDateTimeImmutable()
+                CarbonImmutable::now('UTC')->toDateTimeImmutable(),
+                $saga
             );
             $item = $item->comPosicao($this->fila->posicao($osId));
 
             Log::info('os_enfileirada', [
                 'os.id'           => $osId,
                 'execucao.id'     => $item->execucaoId,
+                'saga.id'         => $saga?->sagaId,
                 'fila.prioridade' => $item->prioridade,
                 'fila.posicao'    => $item->posicao,
             ]);
@@ -85,9 +89,11 @@ class FilaExecucaoService
                 // Tempo que a OS esperou na fila (permaneceu em APROVADA).
                 duracaoSegundos: max(0, $agora->getTimestamp() - $item->enfileiradaEm->getTimestamp()),
                 observacao: null,
-                traceId: Tracing::traceIdAtual(),
+                // Com saga, a timeline aponta para o trace distribuído em que a OS foi recebida.
+                traceId: $item->saga?->traceId() ?? Tracing::traceIdAtual(),
                 ocorridoEm: $agora,
                 execucaoId: $item->execucaoId ?? (string) Str::uuid(),
+                saga: $item->saga,
             );
 
             try {
@@ -112,6 +118,8 @@ class FilaExecucaoService
                 'os.status_novo'      => $evento->statusNovo->value,
                 'os.duracao_segundos' => $evento->duracaoSegundos,
             ]);
+
+            $this->eventos->iniciada($evento);
 
             return $evento;
         });

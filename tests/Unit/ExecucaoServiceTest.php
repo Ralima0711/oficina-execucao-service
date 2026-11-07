@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Application\Services\EventosDeExecucao;
 use App\Application\Services\ExecucaoService;
 use App\Application\Services\FilaExecucaoService;
 use App\Domain\Execucao\Entities\EventoTimeline;
@@ -9,6 +10,7 @@ use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use Tests\Support\FilaEmMemoria;
 use Tests\Support\Ids;
+use Tests\Support\PublicadorEmMemoria;
 use Tests\Support\TimelineEmMemoria;
 use Tests\TestCase;
 
@@ -24,8 +26,8 @@ class ExecucaoServiceTest extends TestCase
     {
         $fila = new FilaEmMemoria();
         $timeline = new TimelineComLeituraCongelavel();
-        $fila_ = new FilaExecucaoService($fila, $timeline);
-        $execucao = new ExecucaoService($timeline, $fila);
+        $fila_ = new FilaExecucaoService($fila, $timeline, new EventosDeExecucao(new PublicadorEmMemoria()));
+        $execucao = new ExecucaoService($timeline, $fila, new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $fila_->enfileirar(Ids::os(10));
         $fila_->proxima(Ids::mecanico(7));
@@ -47,7 +49,7 @@ class ExecucaoServiceTest extends TestCase
     public function test_dois_inicios_de_diagnostico_simultaneos_gravam_um_so(): void
     {
         $timeline = new TimelineComLeituraCongelavel();
-        $execucao = new ExecucaoService($timeline, new FilaEmMemoria());
+        $execucao = new ExecucaoService($timeline, new FilaEmMemoria(), new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $timeline->congelarLeitura(Ids::os(10));
 
@@ -65,8 +67,8 @@ class ExecucaoServiceTest extends TestCase
     {
         $fila = new FilaEmMemoria();
         $timeline = new TimelineComLeituraCongelavel();
-        $filaService = new FilaExecucaoService($fila, $timeline);
-        $execucao = new ExecucaoService($timeline, $fila);
+        $filaService = new FilaExecucaoService($fila, $timeline, new EventosDeExecucao(new PublicadorEmMemoria()));
+        $execucao = new ExecucaoService($timeline, $fila, new EventosDeExecucao(new PublicadorEmMemoria()));
 
         $filaService->enfileirar(Ids::os(10));
         $filaService->proxima(Ids::mecanico(7));

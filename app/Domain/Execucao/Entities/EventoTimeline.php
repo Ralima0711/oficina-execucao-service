@@ -2,6 +2,7 @@
 
 namespace App\Domain\Execucao\Entities;
 
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 
@@ -18,6 +19,7 @@ final class EventoTimeline implements \JsonSerializable
         public readonly ?string $traceId,
         public readonly \DateTimeImmutable $ocorridoEm,
         public readonly ?string $execucaoId = null,
+        public readonly ?ContextoSaga $saga = null,
     ) {}
 
     public function toArray(): array
@@ -25,6 +27,7 @@ final class EventoTimeline implements \JsonSerializable
         return [
             'osId'            => $this->osId,
             'execucaoId'      => $this->execucaoId,
+            'sagaId'          => $this->saga?->sagaId,
             'tipo'            => $this->tipo->value,
             'statusAnterior'  => $this->statusAnterior?->value,
             'statusNovo'      => $this->statusNovo?->value,

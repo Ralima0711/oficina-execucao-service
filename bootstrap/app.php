@@ -1,15 +1,21 @@
 <?php
 
+use App\Application\Messaging\FalhaAoPublicarEvento;
 use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Exceptions\NaoEncontradoException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         api: __DIR__.'/../routes/api.php',
+        then: function () {
+            // /health na raiz, para as probes do Kubernetes; passa pelo mesmo middleware (trace) da API.
+            Route::middleware('api')->group(__DIR__.'/../routes/health.php');
+        },
     )
     ->withCommands([
         __DIR__.'/../app/Interface/Console',
@@ -33,6 +39,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->render(fn (ConflitoException $e) => response()->json(['message' => $e->getMessage()], 409));
         $exceptions->render(fn (NaoEncontradoException $e) => response()->json(['message' => $e->getMessage()], 404));
         $exceptions->render(fn (\DomainException $e) => response()->json(['message' => $e->getMessage()], 422));
+
+        // A transição já foi gravada; só o evento para o orquestrador não saiu.
+        $exceptions->render(fn (FalhaAoPublicarEvento $e) => response()->json([
+            'message' => 'A transição foi gravada, mas o evento não foi publicado no broker.',
+        ], 503));
 
         // Garante respostas JSON para todas as rotas da API, mesmo sem Accept header.
         $exceptions->shouldRenderJsonWhen(function (Request $request) {

@@ -1,35 +1,64 @@
+# Variáveis compartilhadas pela API e pelo worker de mensagens.
+x-execucao-env: &execucao-env
+  APP_ENV: local
+  APP_DEBUG: "true"
+  LOG_CHANNEL: stdout_json
+  LOG_LEVEL: info
+  MONGO_URI: mongodb://mongo:27017
+  MONGO_DATABASE: execucao
+  REDIS_CLIENT: predis
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PREFIX: ""
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  CACHE_STORE: array
+  SESSION_DRIVER: array
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+
 services:
   app:
     build: .
     container_name: execucao_app
     # Cria os índices do Mongo (idempotente) e sobe a API.
-    command: sh -c "php artisan execucao:criar-indices && php artisan serve --host=0.0.0.0 --port=8000"
+    command: sh -c "php artisan execucao:criar-indices && php artisan serve --host=0.0.0.0 --port=8080"
     environment:
-      APP_ENV: local
-      APP_DEBUG: "true"
-      LOG_CHANNEL: stdout_json
-      LOG_LEVEL: info
-      MONGO_URI: mongodb://mongo:27017
-      MONGO_DATABASE: execucao
-      REDIS_CLIENT: predis
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PREFIX: ""
-      CACHE_STORE: array
-      SESSION_DRIVER: array
+      <<: *execucao-env
       L5_SWAGGER_GENERATE_ALWAYS: "true"
       L5_SWAGGER_CONST_HOST: http://localhost:${APP_PORT:-8080}
       OTEL_SERVICE_NAME: oficina-execucao-service
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     ports:
-      - "${APP_PORT:-8080}:8000"
+      - "${APP_PORT:-8080}:8080"
     volumes:
       - .:/app
     depends_on:
       mongo:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - execucao_network
+
+  # Consome os comandos do orquestrador (execucao.enviar-para-execucao).
+  worker:
+    build: .
+    container_name: execucao_worker
+    command: sh -c "php artisan execucao:criar-indices && php artisan execucao:consumir"
+    restart: unless-stopped
+    environment:
+      <<: *execucao-env
+      OTEL_SERVICE_NAME: oficina-execucao-service
+    volumes:
+      - .:/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - execucao_network
@@ -67,6 +96,30 @@ services:
     networks:
       - execucao_network
 
+  # A topologia (exchanges, filas, DLQs e bindings) vem do contrato: docker/rabbitmq/definitions.json
+  # é o recorte da Execução do rabbitmq/definitions.json do oficina-infra-fase4, que é a fonte da verdade.
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: execucao_rabbitmq
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - execucao_network
+
 networks:
   execucao_network:
     driver: bridge
@@ -74,3 +127,4 @@ networks:
 volumes:
   mongo_data:
   redis_data:
+  rabbitmq_data:

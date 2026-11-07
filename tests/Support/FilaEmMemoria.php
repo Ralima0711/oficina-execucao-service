@@ -5,6 +5,7 @@ namespace Tests\Support;
 use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 
 /**
  * Fake em memória da fila: mesmas regras do Redis (maior prioridade primeiro e, na
@@ -19,13 +20,13 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
     /** @var array<string, string> mecanicoId => osId */
     private array $emExecucao = [];
 
-    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em): ItemFila
+    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em, ?ContextoSaga $saga = null): ItemFila
     {
         if (isset($this->fila[$osId])) {
             throw new ConflitoException("A OS {$osId} já está na fila de execução.");
         }
 
-        $this->fila[$osId] = new ItemFila($osId, $em, $prioridade, $execucaoId);
+        $this->fila[$osId] = new ItemFila($osId, $em, $prioridade, $execucaoId, null, $saga);
         $this->ordenar();
 
         return $this->fila[$osId];

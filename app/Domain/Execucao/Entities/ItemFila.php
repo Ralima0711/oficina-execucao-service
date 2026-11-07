@@ -2,6 +2,8 @@
 
 namespace App\Domain\Execucao\Entities;
 
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
+
 final class ItemFila implements \JsonSerializable
 {
     public const PRIORIDADE_MINIMA = 1;
@@ -17,11 +19,12 @@ final class ItemFila implements \JsonSerializable
         public readonly int $prioridade = self::PRIORIDADE_MINIMA,
         public readonly ?string $execucaoId = null,
         public readonly ?int $posicao = null,
+        public readonly ?ContextoSaga $saga = null,
     ) {}
 
     public function comPosicao(?int $posicao): self
     {
-        return new self($this->osId, $this->enfileiradaEm, $this->prioridade, $this->execucaoId, $posicao);
+        return new self($this->osId, $this->enfileiradaEm, $this->prioridade, $this->execucaoId, $posicao, $this->saga);
     }
 
     public function toArray(): array

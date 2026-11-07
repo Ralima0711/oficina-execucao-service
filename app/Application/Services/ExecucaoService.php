@@ -7,6 +7,7 @@ use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Exceptions\NaoEncontradoException;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Observability\Tracing;
@@ -18,6 +19,7 @@ class ExecucaoService
     public function __construct(
         private TimelineRepositoryInterface $timeline,
         private FilaExecucaoRepositoryInterface $fila,
+        private EventosDeExecucao $eventos,
     ) {}
 
     public function iniciarDiagnostico(string $osId, string $mecanicoId, ?string $observacao = null): EventoTimeline
@@ -96,10 +98,13 @@ class ExecucaoService
                 $observacao,
                 $agora,
                 $ultimo->execucaoId,
+                $ultimo->saga,
             );
 
             // Libera o mecânico para puxar a próxima OS. Idempotente.
             $this->fila->concluir($mecanicoId, $osId);
+
+            $this->eventos->concluida($evento, $ultimo->ocorridoEm);
 
             return $evento;
         });
@@ -145,6 +150,7 @@ class ExecucaoService
         ?string $observacao,
         ?\DateTimeImmutable $ocorridoEm = null,
         ?string $execucaoId = null,
+        ?ContextoSaga $saga = null,
     ): EventoTimeline {
         $evento = new EventoTimeline(
             osId: $osId,
@@ -154,9 +160,10 @@ class ExecucaoService
             mecanicoId: $mecanicoId,
             duracaoSegundos: $duracaoSegundos,
             observacao: $observacao,
-            traceId: Tracing::traceIdAtual(),
+            traceId: $saga?->traceId() ?? Tracing::traceIdAtual(),
             ocorridoEm: $ocorridoEm ?? CarbonImmutable::now('UTC')->toDateTimeImmutable(),
             execucaoId: $execucaoId,
+            saga: $saga,
         );
 
         $this->timeline->registrar($evento);

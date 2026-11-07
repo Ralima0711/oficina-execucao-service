@@ -48,6 +48,28 @@ class OpenTelemetryProvider
             return self::$provider;
         }
 
+        try {
+            self::$provider = self::criarProviderOtlp($endpoint);
+        } catch (\Throwable $e) {
+            // Observabilidade mal configurada (ex.: URL inválida) nunca derruba o serviço:
+            // segue sem exportar, e o motivo fica no log do processo.
+            error_log('[otel] exportação desativada, OTEL_EXPORTER_OTLP_ENDPOINT inválido: ' . $e->getMessage());
+            self::$provider = new TracerProvider([], new AlwaysOnSampler());
+
+            return self::$provider;
+        }
+
+        // O BatchSpanProcessor enfileira os spans e só os envia no flush/shutdown.
+        // Em PHP-FPM o processo morre ao fim da requisição, e o SDK não registra
+        // esse encerramento sozinho — sem isto, a fila morre com o processo e
+        // nenhum trace chega ao coletor.
+        self::registrarShutdown();
+
+        return self::$provider;
+    }
+
+    private static function criarProviderOtlp(string $endpoint): TracerProviderInterface
+    {
         $headers = self::parseHeaders((string) (env('OTEL_EXPORTER_OTLP_HEADERS') ?: ''));
 
         $transport = (new OtlpHttpTransportFactory())->create(
@@ -62,19 +84,11 @@ class OpenTelemetryProvider
             ]))
         );
 
-        self::$provider = new TracerProvider(
+        return new TracerProvider(
             [new BatchSpanProcessor(new SpanExporter($transport), ClockFactory::getDefault())],
             new AlwaysOnSampler(),
             $resource
         );
-
-        // O BatchSpanProcessor enfileira os spans e só os envia no flush/shutdown.
-        // Em PHP-FPM o processo morre ao fim da requisição, e o SDK não registra
-        // esse encerramento sozinho — sem isto, a fila morre com o processo e
-        // nenhum trace chega ao coletor.
-        self::registrarShutdown();
-
-        return self::$provider;
     }
 
     /**

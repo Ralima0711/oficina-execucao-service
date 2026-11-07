@@ -4,6 +4,7 @@ namespace App\Domain\Execucao\Repositories;
 
 use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\ConflitoException;
+use App\Domain\Execucao\ValueObjects\ContextoSaga;
 
 
 interface FilaExecucaoRepositoryInterface
@@ -11,7 +12,7 @@ interface FilaExecucaoRepositoryInterface
     /**
      * @throws ConflitoException se a OS já está na fila
      */
-    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em): ItemFila;
+    public function enfileirar(string $osId, int $prioridade, string $execucaoId, \DateTimeImmutable $em, ?ContextoSaga $saga = null): ItemFila;
 
     /**
      * Tira a próxima OS da fila e a atribui ao mecânico, num passo atômico.

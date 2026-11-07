@@ -2,6 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Application\Messaging\Envelope;
+use App\Application\Messaging\PublicadorDeEventosInterface;
+use App\Application\Services\EnviarParaExecucaoHandler;
+use App\Domain\Execucao\Repositories\MensagemProcessadaRepositoryInterface;
 use App\Domain\Execucao\Repositories\FilaExecucaoRepositoryInterface;
 use App\Domain\Execucao\Repositories\TimelineRepositoryInterface;
 use Carbon\CarbonImmutable;
@@ -10,6 +14,8 @@ use Tests\Support\FilaEmMemoria;
 use Tests\Support\TimelineEmMemoria;
 use Tests\TestCase;
 use Tests\Support\Ids;
+use Tests\Support\MensagensProcessadasEmMemoria;
+use Tests\Support\PublicadorEmMemoria;
 
 /**
  * API da Execução de ponta a ponta (HTTP → serviços → repositórios) com os
@@ -17,12 +23,16 @@ use Tests\Support\Ids;
  */
 class ExecucaoApiTest extends TestCase
 {
+    private PublicadorEmMemoria $publicador;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->app->instance(FilaExecucaoRepositoryInterface::class, new FilaEmMemoria());
         $this->app->instance(TimelineRepositoryInterface::class, new TimelineEmMemoria());
+        $this->app->instance(PublicadorDeEventosInterface::class, $this->publicador = new PublicadorEmMemoria());
+        $this->app->instance(MensagemProcessadaRepositoryInterface::class, new MensagensProcessadasEmMemoria());
 
         CarbonImmutable::setTestNow('2026-10-27 14:00:00');
     }
@@ -307,6 +317,79 @@ class ExecucaoApiTest extends TestCase
         $b = $this->postJson('/api/execucao/fila', ['osId' => Ids::os(11)])->json('execucaoId');
 
         $this->assertNotSame($a, $b);
+    }
+
+    // ── Mensageria: OS que veio de uma saga ───────────────────────
+
+    public function test_os_vinda_de_comando_publica_iniciada_e_concluida_de_volta_na_mesma_saga(): void
+    {
+        $comando = $this->comandoDeSaga(Ids::os(10));
+        $this->app->make(EnviarParaExecucaoHandler::class)->handle($comando);
+
+        $execucaoId = $this->getJson('/api/execucao/fila')->json('0.execucaoId');
+
+        $this->assertSame([], $this->publicador->publicadas, 'Enfileirar não publica nada: o evento sai quando o mecânico começa.');
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/finalizar', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->assertSame(['execucao.iniciada', 'execucao.concluida'], $this->publicador->routingKeys());
+
+        foreach ($this->publicador->publicadas as ['envelope' => $envelope]) {
+            $this->assertSame($comando->sagaId, $envelope->sagaId);
+            $this->assertSame($comando->messageId, $envelope->causationId);
+            $this->assertSame(Ids::os(10), $envelope->body['osId']);
+            $this->assertSame($execucaoId, $envelope->body['execucaoId']);
+            $this->assertSame(Ids::mecanico(7), $envelope->body['mecanicoId']);
+        }
+    }
+
+    public function test_a_timeline_de_uma_os_de_saga_aponta_para_o_trace_do_comando(): void
+    {
+        $comando = $this->comandoDeSaga(Ids::os(10));
+        $this->app->make(EnviarParaExecucaoHandler::class)->handle($comando);
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertOk()
+            ->assertJsonPath('sagaId', $comando->sagaId)
+            ->assertJsonPath('traceId', '0af7651916cd43dd8448eb211c80319c');
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/finalizar', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertJsonPath('sagaId', $comando->sagaId)
+            ->assertJsonPath('traceId', '0af7651916cd43dd8448eb211c80319c');
+    }
+
+    public function test_os_enfileirada_pela_api_nao_publica_evento_porque_nao_tem_saga(): void
+    {
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertCreated();
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/finalizar', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->assertSame([], $this->publicador->publicadas);
+    }
+
+    public function test_falha_do_broker_devolve_503_mas_a_transicao_ja_esta_gravada(): void
+    {
+        $this->app->make(EnviarParaExecucaoHandler::class)->handle($this->comandoDeSaga(Ids::os(10)));
+        $this->publicador->falhar = true;
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertStatus(503)
+            ->assertJsonPath('message', 'A transição foi gravada, mas o evento não foi publicado no broker.');
+
+        $this->getJson('/api/execucao/os/' . Ids::os(10) . '/timeline')
+            ->assertOk()
+            ->assertJsonPath('0.tipo', 'EXECUCAO_INICIADA');
+    }
+
+    private function comandoDeSaga(string $osId): Envelope
+    {
+        return Envelope::novo(
+            'EnviarParaExecucao',
+            '9b2f4c1d-3e5a-4f6b-8c7d-0a1b2c3d4e5f',
+            null,
+            ['osId' => $osId, 'orcamentoId' => Ids::os(99)],
+            '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
+        );
     }
 
     public function test_rota_com_os_id_nao_numerico_nao_existe(): void
