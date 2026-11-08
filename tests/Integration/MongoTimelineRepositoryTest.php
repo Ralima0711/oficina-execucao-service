@@ -157,6 +157,41 @@ class MongoTimelineRepositoryTest extends TestCase
         $this->assertCount(1, $this->repo->porOs(Ids::os(1)));
     }
 
+    public function test_o_indice_unico_cobre_o_fim_por_falha_e_a_hidratacao_le_o_status_falhou(): void
+    {
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FALHOU, '15:00:00', StatusExecucao::EM_EXECUCAO, 60));
+
+        $this->assertSame(TipoEvento::EXECUCAO_FALHOU, $this->repo->ultimoEventoDeEstado(Ids::os(1))->tipo);
+
+        $this->expectException(ConflitoException::class);
+        $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FALHOU, '15:00:01', StatusExecucao::EM_EXECUCAO, 61));
+    }
+
+    public function test_banco_criado_antes_do_execucao_falhou_tem_o_indice_unico_atualizado_sem_erro(): void
+    {
+        // Como estava antes de EXECUCAO_FALHOU existir: mesmo nome, filtro com a lista antiga.
+        $colecao = $this->database->selectCollection(MongoTimelineRepository::COLECAO);
+        $colecao->createIndex(['osId' => 1, 'tipo' => 1], [
+            'name'                    => 'os_tipo_estado_unico',
+            'unique'                  => true,
+            'partialFilterExpression' => ['tipo' => ['$in' => ['DIAGNOSTICO_INICIADO', 'EXECUCAO_INICIADA', 'EXECUCAO_FINALIZADA']]],
+        ]);
+
+        $this->repo->criarIndices();
+        $this->repo->criarIndices();
+
+        $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FALHOU, '15:00:00', StatusExecucao::EM_EXECUCAO, 60));
+
+        try {
+            $this->repo->registrar($this->evento(1, TipoEvento::EXECUCAO_FALHOU, '15:00:01', StatusExecucao::EM_EXECUCAO, 61));
+            $this->fail('O índice recriado deveria barrar a segunda falha da mesma OS.');
+        } catch (ConflitoException) {
+            $this->addToAssertionCount(1);
+        }
+    }
+
     public function test_notas_se_repetem_e_outras_os_podem_ter_a_mesma_transicao(): void
     {
         $this->repo->criarIndices();

@@ -10,6 +10,8 @@ namespace App\Domain\Execucao\ValueObjects;
  *
  *   RECEBIDA → EM_DIAGNOSTICO → (orçamento/aprovação, fora daqui) → APROVADA
  *            → EM_EXECUCAO → FINALIZADA
+ *
+ *   APROVADA (na fila) ou EM_EXECUCAO → FALHOU   (falha do reparo ou CancelarExecucao)
  */
 enum StatusExecucao: string
 {
@@ -18,4 +20,6 @@ enum StatusExecucao: string
     case APROVADA = 'APROVADA';
     case EM_EXECUCAO = 'EM_EXECUCAO';
     case FINALIZADA = 'FINALIZADA';
+    /** Terminal: reparo que falhou ou execução cancelada pela compensação da saga. */
+    case FALHOU = 'FALHOU';
 }

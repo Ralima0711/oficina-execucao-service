@@ -10,7 +10,8 @@ Microsserviço de **Execução e Produção** do Tech Challenge SOAT Fase 4 — 
 | Iniciar diagnóstico | Publica evento |
 | Registrar apontamentos do reparo | Timeline local |
 | Concluir execução | Publica evento, e a Saga finaliza a OS |
-| Retirar da fila | Compensação |
+| Informar falha do reparo | Publica `execucao.falhou`, e a Saga compensa |
+| Cancelar execução | Compensação: consome `execucao.cancelar-execucao` |
 
 ## Bancos
 
@@ -38,13 +39,26 @@ esperando para sempre.
 
 **Como funciona hoje (caminho feliz):**
 
-1. O orquestrador publica `EnviarParaExecucao` em `execucao.enviar-para-execucao`; o worker (`php artisan execucao:consumir`) valida o envelope, descarta `messageId` repetido, e coloca a OS na fila de execução guardando o `sagaId`, o `messageId` do comando e o `traceparent`.
+1. O orquestrador publica `EnviarParaExecucao` em `execucao.enviar-para-execucao`; o worker (`php artisan execucao:consumir`, que consome as duas filas de comando) valida o envelope, descarta `messageId` repetido, e coloca a OS na fila de execução guardando o `sagaId`, o `messageId` do comando e o `traceparent`.
 2. O mecânico puxa a OS (`POST /api/execucao/fila/proxima`) e a Execução publica `execucao.iniciada`.
 3. Ao finalizar o reparo (`POST /api/execucao/os/{osId}/finalizar`) ela publica `execucao.concluida`.
 
-Os eventos voltam no **mesmo trace** do comando, com o mesmo `sagaId` e `causationId` igual ao `messageId` do comando, mesmo com o mecânico agindo em outra requisição (ver `docs/contrato-observabilidade.md`). Mensagem fora do contrato ou que falha ao ser tratada vai para a DLQ (`dlq.execucao.enviar-para-execucao`).
+**Compensação** (comando `execucao.cancelar-execucao`, `CancelarExecucao` no contrato v1.1). O que ele faz depende de onde a OS está:
 
-> **Ainda não implementado:** `execucao.falhou`, o comando `execucao.cancelar-execucao` (compensação) e a publicação transacional (o evento sai depois de gravar a transição; se o broker cair nesse intervalo a API responde 503 e a transição fica gravada sem o evento). Uma OS enfileirada direto por `POST /api/execucao/fila` não tem saga e não publica evento.
+| Situação da OS | O que acontece |
+|---|---|
+| Na fila, ninguém puxou | Sai da fila (atômico), o `execucaoId` é liberado e a timeline ganha `EXECUCAO_FALHOU`. Publica `execucao.falhou` com motivo `cancelada` e sem `mecanicoId` |
+| Mecânico já puxou | Encerra o reparo, libera o mecânico, grava `EXECUCAO_FALHOU` na timeline e publica `execucao.falhou` (motivo `cancelada`) |
+| Já concluída | **Não desfaz.** Responde sucesso, não publica evento e registra a tentativa como nota na timeline (o que se desfaz é o dinheiro, pelo estorno) |
+| Já falhou, ou nunca chegou à fila | Pulada, não é erro: nenhum efeito, nenhum evento |
+
+O comando é idempotente: o mesmo `messageId` é descartado e um novo `CancelarExecucao` da mesma OS tem o efeito uma vez só. O evento sai no trace do cancelamento, com o `sagaId` dele e `causationId` igual ao `messageId` do `CancelarExecucao`. `FALHOU` é terminal: um `EnviarParaExecucao` atrasado não recoloca a OS na fila.
+
+**Falha do reparo.** O mecânico informa `POST /api/execucao/os/{osId}/falhar` (`mecanicoId` e `motivo`): a OS vai de `EM_EXECUCAO` para `FALHOU`, o mecânico é liberado e a Execução publica `execucao.falhou` com o motivo. É isto que dá início à compensação da saga; o orquestrador então manda `CancelarExecucao`, que encontra a OS já encerrada e é pulado.
+
+Os eventos voltam no **mesmo trace** do comando, com o mesmo `sagaId` e `causationId` igual ao `messageId` do comando, mesmo com o mecânico agindo em outra requisição (ver `docs/contrato-observabilidade.md`). Mensagem fora do contrato ou que falha ao ser tratada vai para a DLQ da sua fila (`dlq.execucao.enviar-para-execucao`, `dlq.execucao.cancelar-execucao`).
+
+> **Limites conhecidos:** a publicação não é transacional (o evento sai depois de gravar a transição; se o broker cair nesse intervalo a API responde 503 e a transição fica gravada sem o evento). Finalizar e cancelar a mesma OS exatamente ao mesmo tempo pode gravar os dois fins (o índice único é por tipo de evento, e a janela é de milissegundos). Uma OS enfileirada direto por `POST /api/execucao/fila` não tem saga e não publica evento. Comando fora do contrato (corpo inválido) vai para a DLQ da fila dele sem evento de falha, embora a regra 6 da Parte 5 do contrato peça o evento para campo essencial inválido: fica como pendência a alinhar com o orquestrador, porque o payload de `execucao.falhou` exige um `osId` válido.
 >
 > A **prioridade** é premissa: o contrato traz `prioridade` (padrão 1) sem definir o sentido; aqui, maior número é mais urgente (faixa de 1 a 5) e, na mesma prioridade, vale a ordem de chegada. Pendente de confirmação na revisão do contrato.
 
@@ -97,9 +111,10 @@ docker compose run --rm --no-deps app composer install
 | POST | `/api/execucao/os/{osId}/diagnostico` | inicia o diagnóstico |
 | POST | `/api/execucao/os/{osId}/notas` | anotação do mecânico |
 | POST | `/api/execucao/os/{osId}/finalizar` | encerra o reparo e libera o mecânico |
+| POST | `/api/execucao/os/{osId}/falhar` | informa que o reparo falhou (`{"mecanicoId": "<uuid>", "motivo": "..."}`), libera o mecânico e publica `execucao.falhou` |
 | GET | `/api/execucao/metricas/tempo-medio` | tempo médio por status |
 
-Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecânico, transição já registrada), `404` (fila vazia, OS fora da fila ou sem eventos), `422` (transição inválida, id que não é UUID ou prioridade fora da faixa).
+Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecânico, transição já registrada), `404` (fila vazia, OS fora da fila ou sem eventos), `422` (transição inválida, id que não é UUID ou prioridade fora da faixa), `503` (a transição foi gravada, mas o evento não saiu para o broker).
 
 > O mecânico vem no corpo da requisição enquanto a autenticação entre serviços não está definida.
 
@@ -118,7 +133,7 @@ docker compose exec app vendor/bin/phpunit --testsuite Integration
 
 Fora do compose, os testes de integração são pulados quando Redis, Mongo ou RabbitMQ não estão acessíveis.
 
-O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do OS Service e do Billing: se o contrato mudar, ou se a Execução deixar de cumprir algo (um campo, uma fila, um comando válido que o consumidor recusaria), ele quebra. As lacunas conhecidas (`execucao.falhou` e o consumo de `execucao.cancelar-execucao`) ficam registradas no próprio teste. O helper `tests/Support/ContratoAsyncApi.php` pode ser copiado para os outros serviços.
+O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do OS Service e do Billing: se o contrato mudar, ou se a Execução deixar de cumprir algo (um campo, uma fila, um comando válido que o consumidor recusaria), ele quebra. Ele também falha se o contrato passar a atribuir à Execução uma mensagem que ela não trata. O helper `tests/Support/ContratoAsyncApi.php` pode ser copiado para os outros serviços.
 
 ## Documentação
 

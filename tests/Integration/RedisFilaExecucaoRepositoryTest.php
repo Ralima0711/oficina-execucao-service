@@ -208,6 +208,46 @@ class RedisFilaExecucaoRepositoryTest extends TestCase
         $this->assertSame(0, Redis::exists(RedisFilaExecucaoRepository::chaveExecucao(Ids::os(1))));
     }
 
+    public function test_retirar_devolve_o_item_com_execucao_id_saga_e_prioridade_e_apaga_tudo_dele(): void
+    {
+        $saga = new \App\Domain\Execucao\ValueObjects\ContextoSaga('9b2f4c1d-3e5a-4f6b-8c7d-0a1b2c3d4e5f', '7c9e6679-7425-40de-944b-e07fc1f90ae7', '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+        $chegada = new \DateTimeImmutable('2026-10-27 14:00:01.123', new \DateTimeZone('UTC'));
+        $this->repo->enfileirar(Ids::os(1), 4, 'exec-1', $chegada, $saga);
+        $this->enfileirar(2, 1, '14:00:02');
+
+        $item = $this->repo->retirar(Ids::os(1));
+
+        $this->assertSame(Ids::os(1), $item->osId);
+        $this->assertSame(4, $item->prioridade);
+        $this->assertSame('exec-1', $item->execucaoId);
+        $this->assertSame($saga->sagaId, $item->saga->sagaId);
+        $this->assertSame($chegada->format('Uv'), $item->enfileiradaEm->format('Uv'));
+
+        $this->assertSame([Ids::os(2)], $this->ordem(), 'Só a OS cancelada saiu da fila.');
+        $this->assertSame(0, Redis::exists(RedisFilaExecucaoRepository::chaveExecucao(Ids::os(1))), 'O execucaoId guardado foi liberado.');
+    }
+
+    public function test_retirar_os_que_nao_esta_na_fila_devolve_null_e_nao_mexe_em_nada(): void
+    {
+        $this->enfileirar(1, 1, '14:00:01');
+        $this->repo->proxima(Ids::mecanico(7));
+
+        $this->assertNull($this->repo->retirar(Ids::os(1)), 'A OS já foi puxada: não está mais na fila.');
+        $this->assertNull($this->repo->retirar(Ids::os(99)));
+        $this->assertSame(Ids::os(1), $this->repo->osEmExecucao(Ids::mecanico(7)), 'O mecânico continua com a OS.');
+    }
+
+    public function test_depois_de_retirar_a_os_pode_voltar_com_a_mesma_posicao(): void
+    {
+        $this->enfileirar(1, 3, '14:00:01');
+        $this->enfileirar(2, 3, '14:00:02');
+        $item = $this->repo->retirar(Ids::os(1));
+
+        $this->repo->enfileirar($item->osId, $item->prioridade, $item->execucaoId, $item->enfileiradaEm, $item->saga);
+
+        $this->assertSame([Ids::os(1), Ids::os(2)], $this->ordem());
+    }
+
     /** @return string[] osIds na ordem de atendimento */
     private function ordem(): array
     {

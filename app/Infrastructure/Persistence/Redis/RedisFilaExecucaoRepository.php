@@ -73,6 +73,21 @@ redis.call('DEL', KEYS[2])
 return redis.call('ZREM', KEYS[1], ARGV[1])
 LUA;
 
+    /** Devolve {0} se a OS não estava na fila ou {1, score, valor}; o valor guardado some junto com ela. */
+    private const LUA_RETIRAR = <<<'LUA'
+local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if not score then
+    return {0}
+end
+local valor = redis.call('GET', KEYS[2])
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('DEL', KEYS[2])
+if not valor then
+    valor = ''
+end
+return {1, score, valor}
+LUA;
+
     private const LUA_CONCLUIR = <<<'LUA'
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
@@ -178,6 +193,17 @@ LUA;
     public function remover(string $osId): bool
     {
         return (int) Redis::eval(self::LUA_REMOVER, 2, self::CHAVE_FILA, self::chaveExecucao($osId), $osId) > 0;
+    }
+
+    public function retirar(string $osId): ?ItemFila
+    {
+        $r = Redis::eval(self::LUA_RETIRAR, 2, self::CHAVE_FILA, self::chaveExecucao($osId), $osId);
+
+        if ((int) $r[0] === 0) {
+            return null;
+        }
+
+        return self::item($osId, $r[1], (string) ($r[2] ?? ''));
     }
 
     public function osEmExecucao(string $mecanicoId): ?string

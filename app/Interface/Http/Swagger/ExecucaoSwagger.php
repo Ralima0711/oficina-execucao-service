@@ -24,10 +24,10 @@ use OpenApi\Attributes as OA;
     schema: 'EventoTimeline',
     properties: [
         new OA\Property(property: 'osId', type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'),
-        new OA\Property(property: 'execucaoId', type: 'string', format: 'uuid', nullable: true, example: '44444444-4444-4444-8444-444444444444', description: 'Presente nos eventos de execução (iniciada e finalizada)'),
-        new OA\Property(property: 'tipo', type: 'string', enum: ['DIAGNOSTICO_INICIADO', 'EXECUCAO_INICIADA', 'EXECUCAO_FINALIZADA', 'NOTA'], example: 'EXECUCAO_INICIADA'),
-        new OA\Property(property: 'statusAnterior', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'APROVADA'),
-        new OA\Property(property: 'statusNovo', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA'], example: 'EM_EXECUCAO'),
+        new OA\Property(property: 'execucaoId', type: 'string', format: 'uuid', nullable: true, example: '44444444-4444-4444-8444-444444444444', description: 'Presente nos eventos de execução (iniciada, finalizada e falhou)'),
+        new OA\Property(property: 'tipo', type: 'string', enum: ['DIAGNOSTICO_INICIADO', 'EXECUCAO_INICIADA', 'EXECUCAO_FINALIZADA', 'EXECUCAO_FALHOU', 'NOTA'], example: 'EXECUCAO_INICIADA'),
+        new OA\Property(property: 'statusAnterior', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'FALHOU'], example: 'APROVADA'),
+        new OA\Property(property: 'statusNovo', type: 'string', nullable: true, enum: ['RECEBIDA', 'EM_DIAGNOSTICO', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'FALHOU'], example: 'EM_EXECUCAO'),
         new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', nullable: true, example: '22222222-2222-4222-8222-222222222222'),
         new OA\Property(property: 'duracaoSegundos', type: 'integer', nullable: true, example: 840, description: 'Tempo que a OS ficou no status anterior'),
         new OA\Property(property: 'observacao', type: 'string', nullable: true, example: 'Troca de pastilhas iniciada'),
@@ -205,6 +205,31 @@ class ExecucaoSwagger
         ]
     )]
     public function finalizarDoc(): void {}
+
+    #[OA\Post(
+        path: '/api/execucao/os/{osId}/falhar',
+        tags: ['Timeline'],
+        summary: 'Informa que o reparo falhou (EM_EXECUCAO → FALHOU), libera o mecânico e publica execucao.falhou',
+        description: 'Dispara a compensação da saga: o orquestrador recebe execucao.falhou e desfaz os passos anteriores. A OS enfileirada direto pela API (sem saga) não publica evento.',
+        parameters: [new OA\Parameter(name: 'osId', in: 'path', required: true, schema: new OA\Schema(type: 'string', format: 'uuid', example: '11111111-1111-4111-8111-111111111111'))],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                required: ['mecanicoId', 'motivo'],
+                properties: [
+                    new OA\Property(property: 'mecanicoId', type: 'string', format: 'uuid', example: '22222222-2222-4222-8222-222222222222'),
+                    new OA\Property(property: 'motivo', type: 'string', example: 'Peça com defeito de fábrica; reparo inviável'),
+                ]
+            )
+        ),
+        responses: [
+            new OA\Response(response: 200, description: 'Falha registrada', content: new OA\JsonContent(ref: '#/components/schemas/EventoTimeline')),
+            new OA\Response(response: 409, description: 'OS está com outro mecânico', content: new OA\JsonContent(ref: '#/components/schemas/Erro')),
+            new OA\Response(response: 422, description: 'OS não está EM_EXECUCAO ou erro de validação', content: new OA\JsonContent(ref: '#/components/schemas/Erro')),
+            new OA\Response(response: 503, description: 'A transição foi gravada, mas o evento não foi publicado no broker', content: new OA\JsonContent(ref: '#/components/schemas/Erro')),
+        ]
+    )]
+    public function falharDoc(): void {}
 
     #[OA\Get(
         path: '/api/execucao/metricas/tempo-medio',

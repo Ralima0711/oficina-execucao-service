@@ -38,7 +38,8 @@ class FilaExecucaoService
 
             $status = $this->timeline->ultimoEventoDeEstado($osId)?->statusNovo;
 
-            if ($status === StatusExecucao::EM_EXECUCAO || $status === StatusExecucao::FINALIZADA) {
+            // FALHOU é terminal: OS cancelada pela compensação ou com reparo que falhou não volta à fila.
+            if ($status === StatusExecucao::EM_EXECUCAO || $status === StatusExecucao::FINALIZADA || $status === StatusExecucao::FALHOU) {
                 throw new ConflitoException("A OS {$osId} já está {$status->value} e não pode voltar para a fila.");
             }
 

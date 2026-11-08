@@ -4,6 +4,7 @@ namespace App\Application\Services;
 
 use App\Application\Messaging\Envelope;
 use App\Application\Messaging\MensagemInvalida;
+use App\Application\Messaging\TrataComando;
 use App\Domain\Execucao\Entities\ItemFila;
 use App\Domain\Execucao\Exceptions\ConflitoException;
 use App\Domain\Execucao\Repositories\MensagemProcessadaRepositoryInterface;
@@ -22,7 +23,7 @@ use Illuminate\Support\Facades\Validator;
  *
  * Roda dentro do span CONSUMER aberto por MessageTracing::consumir.
  */
-class EnviarParaExecucaoHandler
+class EnviarParaExecucaoHandler implements TrataComando
 {
     public function __construct(
         private FilaExecucaoService $fila,

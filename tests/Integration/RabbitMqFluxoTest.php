@@ -11,6 +11,7 @@ use App\Infrastructure\Messaging\RabbitMq\ConexaoRabbitMq;
 use App\Infrastructure\Messaging\RabbitMq\ConsumidorDeComandos;
 use App\Infrastructure\Messaging\RabbitMq\RabbitMqPublicador;
 use App\Infrastructure\Persistence\Mongo\MongoMensagensProcessadasRepository;
+use App\Domain\Execucao\ValueObjects\TipoEvento;
 use App\Infrastructure\Persistence\Mongo\MongoTimelineRepository;
 use Illuminate\Support\Facades\Redis;
 use MongoDB\Database;
@@ -41,6 +42,8 @@ class RabbitMqFluxoTest extends TestCase
     private const FILA_COMANDO = 'execucao.enviar-para-execucao.test';
     private const FILA_EVENTOS = 'os.saga.eventos.test';
     private const DLQ = 'dlq.execucao.enviar-para-execucao.test';
+    private const FILA_CANCELAR = 'execucao.cancelar-execucao.test';
+    private const DLQ_CANCELAR = 'dlq.execucao.cancelar-execucao.test';
     private const EXCHANGE_EVENTOS = 'oficina.eventos.test';
     private const EXCHANGE_DLX = 'oficina.dlx.test';
 
@@ -58,6 +61,7 @@ class RabbitMqFluxoTest extends TestCase
             'mongodb.database'                => 'execucao_test',
             'rabbitmq.exchange_eventos'       => self::EXCHANGE_EVENTOS,
             'rabbitmq.fila_enviar'            => self::FILA_COMANDO,
+            'rabbitmq.fila_cancelar'          => self::FILA_CANCELAR,
             'rabbitmq.timeout'                => 2,
         ]);
 
@@ -214,7 +218,117 @@ class RabbitMqFluxoTest extends TestCase
         (new RabbitMqPublicador(new ConexaoRabbitMq()))->publicar('execucao.iniciada', Envelope::novo('x', self::SAGA_ID, null, [], null));
     }
 
+    // ── compensação: CancelarExecucao ─────────────────────────────
+
+    public function test_cancelamento_de_os_na_fila_publica_falhou_no_mesmo_trace_e_libera_o_execucao_id(): void
+    {
+        $envio = $this->comando();
+        $this->publicarComando($envio);
+        $this->consumidor()->executar(1, 5);
+        $execucaoId = $this->app->make(FilaExecucaoRepositoryInterface::class)->listar()[0]->execucaoId;
+
+        $cancelamento = $this->cancelamento();
+        $this->publicarCancelamento($cancelamento);
+
+        $this->assertSame(1, $this->consumidor()->executar(1, 5));
+
+        $this->assertSame([], $this->app->make(FilaExecucaoRepositoryInterface::class)->listar());
+        $this->assertSame(0, Redis::exists(\App\Infrastructure\Persistence\Redis\RedisFilaExecucaoRepository::chaveExecucao(Ids::os(10))), 'O execucaoId foi liberado.');
+
+        [['routingKey' => $chave, 'envelope' => $envelope, 'mensagem' => $mensagem]] = $this->lerEventos(1);
+
+        $this->assertSame('execucao.falhou', $chave);
+        $this->assertSame(self::SAGA_ID, $envelope->sagaId);
+        $this->assertSame($cancelamento->messageId, $envelope->causationId);
+        $this->assertSame(['osId' => Ids::os(10), 'execucaoId' => $execucaoId, 'motivo' => 'cancelada'], $envelope->body);
+        $this->assertSame(self::TRACE_ID, $this->traceIdDe($envelope->traceparent), 'Mesmo trace do cancelamento.');
+        $this->assertSame($envelope->traceparent, $mensagem->get('application_headers')->getNativeData()['traceparent']);
+
+        $this->assertSame(0, $this->contarMensagens(self::DLQ_CANCELAR));
+        $this->assertSame(
+            TipoEvento::EXECUCAO_FALHOU,
+            $this->app->make(MongoTimelineRepository::class)->ultimoEventoDeEstado(Ids::os(10))->tipo
+        );
+    }
+
+    public function test_cancelamento_de_reparo_em_andamento_libera_o_mecanico_e_publica_falhou(): void
+    {
+        $this->publicarComando($this->comando());
+        $this->consumidor()->executar(1, 5);
+        $this->app->make(FilaExecucaoService::class)->proxima(Ids::mecanico(7));
+
+        $this->publicarCancelamento($this->cancelamento());
+        $this->consumidor()->executar(1, 5);
+
+        $this->assertNull($this->app->make(FilaExecucaoRepositoryInterface::class)->osEmExecucao(Ids::mecanico(7)));
+
+        $recebidas = $this->lerEventos(2);
+        $this->assertSame(['execucao.iniciada', 'execucao.falhou'], array_column($recebidas, 'routingKey'));
+        $this->assertSame(Ids::mecanico(7), $recebidas[1]['envelope']->body['mecanicoId']);
+    }
+
+    public function test_cancelamento_entregue_duas_vezes_e_tratado_uma_so_e_a_os_concluida_nao_e_desfeita(): void
+    {
+        $this->publicarComando($this->comando());
+        $this->consumidor()->executar(1, 5);
+
+        $cancelamento = $this->cancelamento();
+        $this->publicarCancelamento($cancelamento);
+        $this->publicarCancelamento($cancelamento);
+        $this->assertSame(2, $this->consumidor()->executar(2, 5));
+        $this->lerEventos(1);
+
+        // Outra OS, já concluída: o cancelamento não desfaz.
+        $this->publicarComando($this->comando(['osId' => Ids::os(11)]));
+        $this->consumidor()->executar(1, 5);
+        $this->app->make(FilaExecucaoService::class)->proxima(Ids::mecanico(7));
+        $this->app->make(ExecucaoService::class)->finalizar(Ids::os(11), Ids::mecanico(7));
+        $this->lerEventos(2);
+
+        $this->publicarCancelamento($this->cancelamento(['osId' => Ids::os(11)]));
+        $this->consumidor()->executar(1, 5);
+
+        $this->assertSame(0, $this->contarMensagens(self::FILA_EVENTOS), 'Nenhum execucao.falhou para a OS concluída.');
+        $this->assertSame(0, $this->contarMensagens(self::DLQ_CANCELAR));
+        $this->assertSame(
+            \App\Domain\Execucao\ValueObjects\StatusExecucao::FINALIZADA,
+            $this->app->make(MongoTimelineRepository::class)->ultimoEventoDeEstado(Ids::os(11))->statusNovo
+        );
+    }
+
+    public function test_cancelamento_fora_do_contrato_vai_para_a_dlq_de_cancelamento_sem_travar_a_fila(): void
+    {
+        $this->publicarCancelamento($this->cancelamento(['osId' => '123']));
+        $this->publicarComando($this->comando());
+
+        $this->assertSame(2, $this->consumidor()->executar(2, 5));
+
+        $this->assertSame(1, $this->contarMensagens(self::DLQ_CANCELAR));
+        $this->assertCount(1, $this->app->make(FilaExecucaoRepositoryInterface::class)->listar(), 'O comando válido da outra fila foi tratado.');
+    }
+
     // ── apoio ─────────────────────────────────────────────────────
+
+    /** @param array<string, mixed> $extraCorpo */
+    private function cancelamento(array $extraCorpo = []): Envelope
+    {
+        return Envelope::novo(
+            'CancelarExecucao',
+            self::SAGA_ID,
+            null,
+            array_merge(['osId' => Ids::os(10), 'orcamentoId' => Ids::os(99), 'motivo' => 'execucao_falhou'], $extraCorpo),
+            '00-' . self::TRACE_ID . '-' . self::SPAN_DO_ORQUESTRADOR . '-01'
+        );
+    }
+
+    private function publicarCancelamento(Envelope $envelope): void
+    {
+        $this->broker->canal()->basic_publish(
+            new AMQPMessage($envelope->toJson(), ['content_type' => 'application/json', 'delivery_mode' => 2, 'application_headers' => new AMQPTable(['traceparent' => $envelope->traceparent])]),
+            '',
+            self::FILA_CANCELAR
+        );
+    }
 
     private function comando(array $extraCorpo = []): Envelope
     {
@@ -312,19 +426,33 @@ class RabbitMqFluxoTest extends TestCase
             'x-dead-letter-routing-key' => self::DLQ,
         ]));
 
+        $canal->queue_declare(self::DLQ_CANCELAR, false, true, false, false);
+        $canal->queue_bind(self::DLQ_CANCELAR, self::EXCHANGE_DLX, self::DLQ_CANCELAR);
+
+        $canal->queue_declare(self::FILA_CANCELAR, false, true, false, false, false, new AMQPTable([
+            'x-dead-letter-exchange'    => self::EXCHANGE_DLX,
+            'x-dead-letter-routing-key' => self::DLQ_CANCELAR,
+        ]));
+
         $canal->queue_declare(self::FILA_EVENTOS, false, true, false, false);
         $canal->queue_bind(self::FILA_EVENTOS, self::EXCHANGE_EVENTOS, 'execucao.*');
 
-        foreach ([self::DLQ, self::FILA_COMANDO, self::FILA_EVENTOS] as $fila) {
+        foreach ($this->todasAsFilas() as $fila) {
             $canal->queue_purge($fila);
         }
+    }
+
+    /** @return string[] */
+    private function todasAsFilas(): array
+    {
+        return [self::DLQ, self::FILA_COMANDO, self::DLQ_CANCELAR, self::FILA_CANCELAR, self::FILA_EVENTOS];
     }
 
     private function removerTopologia(): void
     {
         try {
             $canal = $this->broker->canal();
-            foreach ([self::DLQ, self::FILA_COMANDO, self::FILA_EVENTOS] as $fila) {
+            foreach ($this->todasAsFilas() as $fila) {
                 $canal->queue_delete($fila);
             }
             $canal->exchange_delete(self::EXCHANGE_EVENTOS);

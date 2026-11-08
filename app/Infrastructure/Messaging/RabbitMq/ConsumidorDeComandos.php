@@ -4,6 +4,8 @@ namespace App\Infrastructure\Messaging\RabbitMq;
 
 use App\Application\Messaging\Envelope;
 use App\Application\Messaging\MensagemInvalida;
+use App\Application\Messaging\TrataComando;
+use App\Application\Services\CancelarExecucaoHandler;
 use App\Application\Services\EnviarParaExecucaoHandler;
 use App\Infrastructure\Messaging\MessageTracing;
 use App\Infrastructure\Messaging\TraceContextCarrier;
@@ -12,7 +14,10 @@ use PhpAmqpLib\Exception\AMQPTimeoutException;
 use PhpAmqpLib\Message\AMQPMessage;
 
 /**
- * Consome execucao.enviar-para-execucao, uma mensagem por vez, com ack manual:
+ * Consome os comandos do orquestrador, uma mensagem por vez por fila, com ack manual:
+ *
+ *   execucao.enviar-para-execucao → EnviarParaExecucaoHandler  (enfileira a OS)
+ *   execucao.cancelar-execucao    → CancelarExecucaoHandler    (compensação)
  *
  *   - tratada (ou repetição descartada pela idempotência) → ack
  *   - fora do contrato, ou falha ao tratar              → nack sem requeue → DLQ (oficina.dlx)
@@ -23,8 +28,18 @@ class ConsumidorDeComandos
 {
     public function __construct(
         private ConexaoRabbitMq $conexao,
-        private EnviarParaExecucaoHandler $handler,
+        private EnviarParaExecucaoHandler $enviar,
+        private CancelarExecucaoHandler $cancelar,
     ) {}
+
+    /** @return array<string, TrataComando> fila => quem trata o comando dela */
+    public function filas(): array
+    {
+        return [
+            (string) config('rabbitmq.fila_enviar')   => $this->enviar,
+            (string) config('rabbitmq.fila_cancelar') => $this->cancelar,
+        ];
+    }
 
     /**
      * @param int|null   $limite          para depois de tratar N mensagens (sem limite: roda para sempre)
@@ -38,18 +53,22 @@ class ConsumidorDeComandos
         $canal->basic_qos(0, (int) config('rabbitmq.prefetch'), false);
 
         $tratadas = 0;
-        $tag = $canal->basic_consume(
-            (string) config('rabbitmq.fila_enviar'),
-            '',
-            false,
-            false,
-            false,
-            false,
-            function (AMQPMessage $mensagem) use (&$tratadas) {
-                $this->processar($mensagem);
-                $tratadas++;
-            }
-        );
+        $tags = [];
+
+        foreach ($this->filas() as $fila => $handler) {
+            $tags[] = $canal->basic_consume(
+                $fila,
+                '',
+                false,
+                false,
+                false,
+                false,
+                function (AMQPMessage $mensagem) use (&$tratadas, $fila, $handler) {
+                    $this->processar($mensagem, $fila, $handler);
+                    $tratadas++;
+                }
+            );
+        }
 
         $desde = microtime(true);
 
@@ -64,15 +83,15 @@ class ConsumidorDeComandos
             }
         }
 
-        $canal->basic_cancel($tag);
+        foreach ($tags as $tag) {
+            $canal->basic_cancel($tag);
+        }
 
         return $tratadas;
     }
 
-    public function processar(AMQPMessage $mensagem): void
+    public function processar(AMQPMessage $mensagem, string $fila, TrataComando $handler): void
     {
-        $fila = (string) config('rabbitmq.fila_enviar');
-
         try {
             $envelope = Envelope::fromJson($mensagem->getBody(), $this->cabecalhos($mensagem));
         } catch (MensagemInvalida $e) {
@@ -86,7 +105,7 @@ class ConsumidorDeComandos
             MessageTracing::consumir(
                 $fila,
                 [TraceContextCarrier::TRACEPARENT => $envelope->traceparent],
-                fn () => $this->handler->handle($envelope),
+                fn () => $handler->handle($envelope),
                 ['saga.id' => $envelope->sagaId, 'messaging.message.id' => $envelope->messageId]
             );
 

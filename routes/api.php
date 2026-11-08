@@ -30,6 +30,7 @@ Route::prefix('execucao')->group(function () {
     Route::post('os/{osId}/diagnostico', [ExecucaoController::class, 'iniciarDiagnostico'])->whereUuid('osId');
     Route::post('os/{osId}/notas', [ExecucaoController::class, 'nota'])->whereUuid('osId');
     Route::post('os/{osId}/finalizar', [ExecucaoController::class, 'finalizar'])->whereUuid('osId');
+    Route::post('os/{osId}/falhar', [ExecucaoController::class, 'falhar'])->whereUuid('osId');
 
     Route::get('metricas/tempo-medio', [ExecucaoController::class, 'tempoMedio']);
 });

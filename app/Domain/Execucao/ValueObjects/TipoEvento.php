@@ -13,6 +13,7 @@ enum TipoEvento: string
     case DIAGNOSTICO_INICIADO = 'DIAGNOSTICO_INICIADO';
     case EXECUCAO_INICIADA = 'EXECUCAO_INICIADA';
     case EXECUCAO_FINALIZADA = 'EXECUCAO_FINALIZADA';
+    case EXECUCAO_FALHOU = 'EXECUCAO_FALHOU';
     case NOTA = 'NOTA';
 
     public function mudaEstado(): bool
