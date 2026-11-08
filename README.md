@@ -129,9 +129,14 @@ docker compose exec app vendor/bin/phpunit --testsuite Contract
 
 # Só a integração (usa redis db 15, o banco execucao_test e filas de teste com sufixo .test)
 docker compose exec app vendor/bin/phpunit --testsuite Integration
+
+# BDD (topo da pirâmide): a Execução de ponta a ponta, com Gherkin em português
+docker compose exec app composer bdd
 ```
 
 Fora do compose, os testes de integração são pulados quando Redis, Mongo ou RabbitMQ não estão acessíveis.
+
+O **BDD** (`features/execucao.feature`, rodado com Behat) descreve o que o orquestrador espera da Execução, em quatro cenários: o caminho feliz (`execucao.iniciada` e `execucao.concluida` na mesma saga e no mesmo trace do comando), a falha do reparo (`execucao.falhou` com o motivo, mecânico liberado), a compensação de uma OS ainda na fila e a compensação que não desfaz uma execução concluída. O comando entra pelo RabbitMQ e passa pelo consumidor de verdade, o mecânico age pela API e os eventos são lidos da fila que faz o papel do orquestrador. Usa filas `.bdd`, o Redis db 14 e o banco `execucao_bdd`, e não roda fora do compose. Os passos ficam em `tests/Bdd/ExecucaoContext.php`, e a configuração em `behat.php`.
 
 O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do OS Service e do Billing: se o contrato mudar, ou se a Execução deixar de cumprir algo (um campo, uma fila, um comando válido que o consumidor recusaria), ele quebra. Ele também falha se o contrato passar a atribuir à Execução uma mensagem que ela não trata. O helper `tests/Support/ContratoAsyncApi.php` pode ser copiado para os outros serviços.
 
