@@ -3,6 +3,7 @@
 namespace App\Interface\Http\Controllers;
 
 use App\Application\Services\ExecucaoService;
+use App\Interface\Http\Requests\FalhaRequest;
 use App\Interface\Http\Requests\MecanicoRequest;
 use App\Interface\Http\Requests\NotaRequest;
 use Illuminate\Http\JsonResponse;
@@ -47,6 +48,17 @@ class ExecucaoController extends Controller
             $osId,
             $request->string('mecanicoId')->toString(),
             $request->input('observacao')
+        );
+
+        return response()->json($evento);
+    }
+
+    public function falhar(FalhaRequest $request, string $osId): JsonResponse
+    {
+        $evento = $this->service->falhar(
+            $osId,
+            $request->string('mecanicoId')->toString(),
+            $request->string('motivo')->toString()
         );
 
         return response()->json($evento);

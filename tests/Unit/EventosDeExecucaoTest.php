@@ -76,6 +76,48 @@ class EventosDeExecucaoTest extends TestCase
         $this->assertSame('2026-11-02T16:30:00Z', $envelope->body['concluidaEm']);
     }
 
+    public function test_falhou_antes_de_alguem_puxar_a_os_nao_leva_mecanico_nem_inicio(): void
+    {
+        $sagaDoCancelamento = $this->saga();
+        $evento = new EventoTimeline(
+            osId: Ids::os(10),
+            tipo: TipoEvento::EXECUCAO_FALHOU,
+            statusAnterior: StatusExecucao::APROVADA,
+            statusNovo: StatusExecucao::FALHOU,
+            mecanicoId: null,
+            duracaoSegundos: null,
+            observacao: null,
+            traceId: null,
+            ocorridoEm: new \DateTimeImmutable('2026-11-02 14:00:00', new \DateTimeZone('UTC')),
+            execucaoId: 'exec-1',
+            saga: $sagaDoCancelamento,
+        );
+
+        $this->eventos->falhou($evento, 'cancelada');
+
+        $envelope = $this->publicador->publicadas[0]['envelope'];
+        $this->assertSame('execucao.falhou', $envelope->type);
+        $this->assertSame(self::COMANDO_ID, $envelope->causationId);
+        $this->assertSame(['osId' => Ids::os(10), 'execucaoId' => 'exec-1', 'motivo' => 'cancelada'], $envelope->body);
+    }
+
+    public function test_falhou_de_um_reparo_em_andamento_leva_mecanico_inicio_e_motivo(): void
+    {
+        $this->eventos->falhou(
+            $this->evento(TipoEvento::EXECUCAO_FALHOU, '15:00:00', $this->saga()),
+            'Peça com defeito',
+            new \DateTimeImmutable('2026-11-02 14:00:00', new \DateTimeZone('UTC'))
+        );
+
+        $this->assertSame([
+            'osId'       => Ids::os(10),
+            'execucaoId' => 'exec-1',
+            'mecanicoId' => Ids::mecanico(7),
+            'iniciadaEm' => '2026-11-02T14:00:00Z',
+            'motivo'     => 'Peça com defeito',
+        ], $this->publicador->publicadas[0]['envelope']->body);
+    }
+
     public function test_o_span_de_publicacao_e_filho_do_trace_da_saga_e_o_envelope_carrega_o_proprio_span(): void
     {
         $this->eventos->iniciada($this->evento(TipoEvento::EXECUCAO_INICIADA, '14:00:00', $this->saga()));
@@ -115,6 +157,7 @@ class EventosDeExecucaoTest extends TestCase
     {
         $this->eventos->iniciada($this->evento(TipoEvento::EXECUCAO_INICIADA, '14:00:00', null));
         $this->eventos->concluida($this->evento(TipoEvento::EXECUCAO_FINALIZADA, '15:00:00', null), new \DateTimeImmutable());
+        $this->eventos->falhou($this->evento(TipoEvento::EXECUCAO_FALHOU, '16:00:00', null), 'x');
 
         $this->assertSame([], $this->publicador->publicadas);
         $this->assertSame([], $this->spansExportados());

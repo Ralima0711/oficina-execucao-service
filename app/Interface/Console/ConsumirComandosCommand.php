@@ -11,11 +11,11 @@ class ConsumirComandosCommand extends Command
                             {--max= : para depois de tratar N mensagens}
                             {--ocioso= : para depois de N segundos sem mensagem}';
 
-    protected $description = 'Consome os comandos execucao.enviar-para-execucao do RabbitMQ';
+    protected $description = 'Consome os comandos do orquestrador no RabbitMQ: execucao.enviar-para-execucao e execucao.cancelar-execucao';
 
     public function handle(ConsumidorDeComandos $consumidor): int
     {
-        $this->info('Consumindo ' . config('rabbitmq.fila_enviar') . '...');
+        $this->info('Consumindo ' . implode(', ', array_keys($consumidor->filas())) . '...');
 
         $tratadas = $consumidor->executar(
             $this->option('max') !== null ? (int) $this->option('max') : null,

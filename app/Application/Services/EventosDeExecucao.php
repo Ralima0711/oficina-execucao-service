@@ -11,7 +11,7 @@ use App\Infrastructure\Messaging\TraceContextCarrier;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Publica os eventos execucao.* do contrato v1.0 de volta ao orquestrador.
+ * Publica os eventos execucao.* do contrato de volta ao orquestrador.
  *
  * Só publica se a execução veio de uma saga (comando execucao.enviar-para-execucao):
  * uma OS enfileirada direto pela API REST não tem saga a quem responder.
@@ -45,6 +45,22 @@ class EventosDeExecucao
         ]);
     }
 
+    /**
+     * execucao.falhou: o reparo falhou ou a compensação cancelou a execução. Antes de alguém puxar
+     * a OS não há mecânico nem início, e esses campos ficam de fora do corpo (o contrato diz que
+     * `mecanicoId` "vem nulo"; o schema do AsyncAPI só aceita string, então a chave é omitida).
+     */
+    public function falhou(EventoTimeline $evento, string $motivo, ?\DateTimeImmutable $iniciadaEm = null): void
+    {
+        $this->publicar('execucao.falhou', $evento->saga, array_filter([
+            'osId'       => $evento->osId,
+            'execucaoId' => $evento->execucaoId,
+            'mecanicoId' => $evento->mecanicoId,
+            'iniciadaEm' => $iniciadaEm !== null ? self::iso($iniciadaEm) : null,
+            'motivo'     => $motivo,
+        ], fn ($v) => $v !== null));
+    }
+
     /** @param array<string, mixed> $corpo */
     private function publicar(string $routingKey, ?ContextoSaga $saga, array $corpo): void
     {
@@ -68,7 +84,7 @@ class EventosDeExecucao
         Log::info('evento_publicado', [
             'evento'      => $routingKey,
             'os.id'       => $corpo['osId'],
-            'execucao.id' => $corpo['execucaoId'],
+            'execucao.id' => $corpo['execucaoId'] ?? null,
             'saga.id'     => $saga->sagaId,
         ]);
     }

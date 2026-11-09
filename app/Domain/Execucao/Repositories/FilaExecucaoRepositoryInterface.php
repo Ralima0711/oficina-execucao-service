@@ -39,6 +39,14 @@ interface FilaExecucaoRepositoryInterface
     /** Remove a OS da fila. Devolve false se ela não estava lá. */
     public function remover(string $osId): bool;
 
+    /**
+     * Tira a OS da fila e devolve o item (com o execucaoId e a saga), num passo atômico:
+     * se um mecânico a puxar ao mesmo tempo, só um dos dois fica com ela. Devolve null se a
+     * OS não estava na fila. É o que a compensação usa para cancelar uma execução que ainda
+     * não começou.
+     */
+    public function retirar(string $osId): ?ItemFila;
+
     /** OS que o mecânico está executando agora, se houver. */
     public function osEmExecucao(string $mecanicoId): ?string;
 

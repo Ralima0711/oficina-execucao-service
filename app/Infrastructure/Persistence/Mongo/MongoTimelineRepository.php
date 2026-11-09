@@ -16,6 +16,8 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
 {
     public const COLECAO = 'timeline_os';
 
+    private const INDICE_TRANSICAO_UNICA = 'os_tipo_estado_unico';
+
     public function __construct(private Database $database) {}
 
     /**
@@ -99,6 +101,8 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
     /** Cria os índices da coleção (idempotente). */
     public function criarIndices(): void
     {
+        $this->descartarIndiceDeTransicaoDesatualizado();
+
         $this->colecao()->createIndexes([
             // Consulta da timeline de uma OS, em ordem.
             ['key' => ['osId' => 1, 'ocorridoEm' => 1], 'name' => 'os_ocorrido'],
@@ -109,11 +113,38 @@ class MongoTimelineRepository implements TimelineRepositoryInterface
             // segunda. Notas ficam de fora: podem se repetir.
             [
                 'key'                     => ['osId' => 1, 'tipo' => 1],
-                'name'                    => 'os_tipo_estado_unico',
+                'name'                    => self::INDICE_TRANSICAO_UNICA,
                 'unique'                  => true,
                 'partialFilterExpression' => ['tipo' => ['$in' => $this->tiposDeTransicao()]],
             ],
         ]);
+    }
+
+    /**
+     * O índice único cobre a lista de tipos de transição, e a lista cresce (EXECUCAO_FALHOU). O Mongo
+     * recusa recriar um índice de mesmo nome com outro filtro, então o que foi criado com a lista
+     * antiga é descartado e recriado em seguida: sem isso, o `execucao:criar-indices` de quem já
+     * tinha o banco quebraria a subida do serviço.
+     */
+    private function descartarIndiceDeTransicaoDesatualizado(): void
+    {
+        foreach ($this->colecao()->listIndexes() as $indice) {
+            if ($indice->getName() !== self::INDICE_TRANSICAO_UNICA) {
+                continue;
+            }
+
+            $filtro = $indice['partialFilterExpression'] ?? null;
+            $tipos = $filtro === null ? [] : ((array) ($filtro['tipo'] ?? []))['$in'] ?? [];
+            $tipos = $tipos instanceof \ArrayObject ? $tipos->getArrayCopy() : (array) $tipos;
+
+            $esperados = $this->tiposDeTransicao();
+            sort($tipos);
+            sort($esperados);
+
+            if ($tipos !== $esperados) {
+                $this->colecao()->dropIndex(self::INDICE_TRANSICAO_UNICA);
+            }
+        }
     }
 
     /** @return string[] */

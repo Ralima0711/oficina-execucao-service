@@ -381,6 +381,93 @@ class ExecucaoApiTest extends TestCase
             ->assertJsonPath('0.tipo', 'EXECUCAO_INICIADA');
     }
 
+    // ── Falha do reparo (compensação da saga) ─────────────────────
+
+    public function test_mecanico_informa_a_falha_do_reparo_e_a_execucao_publica_falhou_na_mesma_saga(): void
+    {
+        $comando = $this->comandoDeSaga(Ids::os(10));
+        $this->app->make(EnviarParaExecucaoHandler::class)->handle($comando);
+        $execucaoId = $this->getJson('/api/execucao/fila')->json('0.execucaoId');
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'Peça com defeito de fábrica'])
+            ->assertOk()
+            ->assertJsonPath('tipo', 'EXECUCAO_FALHOU')
+            ->assertJsonPath('statusAnterior', 'EM_EXECUCAO')
+            ->assertJsonPath('statusNovo', 'FALHOU')
+            ->assertJsonPath('execucaoId', $execucaoId)
+            ->assertJsonPath('observacao', 'Peça com defeito de fábrica');
+
+        $this->assertSame(['execucao.iniciada', 'execucao.falhou'], $this->publicador->routingKeys());
+
+        $envelope = $this->publicador->publicadas[1]['envelope'];
+        $this->assertSame($comando->sagaId, $envelope->sagaId);
+        $this->assertSame($comando->messageId, $envelope->causationId);
+        $this->assertSame('Peça com defeito de fábrica', $envelope->body['motivo']);
+        $this->assertSame($execucaoId, $envelope->body['execucaoId']);
+        $this->assertSame(Ids::mecanico(7), $envelope->body['mecanicoId']);
+    }
+
+    public function test_a_falha_libera_o_mecanico_e_a_os_nao_finaliza_nem_volta_a_fila(): void
+    {
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertCreated();
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(11)])->assertCreated();
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'x'])->assertOk();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/finalizar', ['mecanicoId' => Ids::mecanico(7)])->assertStatus(422);
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'x'])->assertStatus(422);
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertStatus(409);
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertOk()
+            ->assertJsonPath('osId', Ids::os(11));
+    }
+
+    public function test_so_falha_os_em_execucao_do_mecanico_responsavel(): void
+    {
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertCreated();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'x'])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Somente ordens EM_EXECUCAO podem falhar (status atual: RECEBIDA).');
+
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(8), 'motivo' => 'x'])->assertStatus(409);
+        $this->assertSame([], $this->publicador->publicadas);
+    }
+
+    public function test_a_falha_exige_mecanico_e_motivo(): void
+    {
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7)])
+            ->assertStatus(422)->assertJsonValidationErrors('motivo');
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['motivo' => 'x'])
+            ->assertStatus(422)->assertJsonValidationErrors('mecanicoId');
+    }
+
+    public function test_falha_de_os_enfileirada_pela_api_nao_publica_evento_porque_nao_tem_saga(): void
+    {
+        $this->postJson('/api/execucao/fila', ['osId' => Ids::os(10)])->assertCreated();
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'x'])->assertOk();
+
+        $this->assertSame([], $this->publicador->publicadas);
+    }
+
+    public function test_falha_do_broker_ao_publicar_falhou_devolve_503_mas_a_transicao_ja_esta_gravada(): void
+    {
+        $this->app->make(EnviarParaExecucaoHandler::class)->handle($this->comandoDeSaga(Ids::os(10)));
+        $this->postJson('/api/execucao/fila/proxima', ['mecanicoId' => Ids::mecanico(7)])->assertOk();
+        $this->publicador->falhar = true;
+
+        $this->postJson('/api/execucao/os/' . Ids::os(10) . '/falhar', ['mecanicoId' => Ids::mecanico(7), 'motivo' => 'x'])->assertStatus(503);
+
+        $this->getJson('/api/execucao/os/' . Ids::os(10) . '/timeline')->assertOk()->assertJsonPath('1.tipo', 'EXECUCAO_FALHOU');
+    }
+
     private function comandoDeSaga(string $osId): Envelope
     {
         return Envelope::novo(

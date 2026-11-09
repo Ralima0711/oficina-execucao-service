@@ -4,10 +4,14 @@ namespace Tests\Contract;
 
 use App\Application\Messaging\Envelope;
 use App\Application\Messaging\MensagemInvalida;
+use App\Application\Services\CancelarExecucaoHandler;
 use App\Application\Services\EnviarParaExecucaoHandler;
 use App\Application\Services\EventosDeExecucao;
+use App\Application\Services\ExecucaoService;
 use App\Application\Services\FilaExecucaoService;
 use App\Domain\Execucao\Entities\EventoTimeline;
+use App\Infrastructure\Messaging\RabbitMq\ConexaoRabbitMq;
+use App\Infrastructure\Messaging\RabbitMq\ConsumidorDeComandos;
 use App\Domain\Execucao\ValueObjects\ContextoSaga;
 use App\Domain\Execucao\ValueObjects\StatusExecucao;
 use App\Domain\Execucao\ValueObjects\TipoEvento;
@@ -29,8 +33,8 @@ use Tests\TestCase;
  *               (recusar um comando válido deixa a saga esperando para sempre);
  *  - publicação: todo evento que a Execução publica cumpre o contrato;
  *  - nomes:     filas, exchange e routing keys são as do contrato;
- *  - lacunas:   o que o contrato prevê e a Execução ainda não faz fica registrado aqui,
- *               e o teste falha quando isso mudar, para ninguém esquecer de revisar.
+ *  - cobertura: a Execução implementa tudo que o contrato lhe atribui; o teste falha se o
+ *               contrato ganhar algo novo para ela, para ninguém esquecer de revisar.
  */
 class AsyncApiContratoTest extends TestCase
 {
@@ -201,7 +205,76 @@ class AsyncApiContratoTest extends TestCase
         );
     }
 
-    // ── publicação: execucao.iniciada / execucao.concluida ────────
+    // ── consumo: CancelarExecucao (compensação) ───────────────────
+
+    /** @return array<string, array{0: array<string, mixed>}> comandos que o contrato diz serem válidos */
+    public static function cancelamentosValidosSegundoOContrato(): array
+    {
+        $os = Ids::os(10);
+
+        return [
+            'só os campos obrigatórios'  => [['osId' => $os, 'motivo' => 'execucao_falhou']],
+            'com orcamentoId'            => [['osId' => $os, 'orcamentoId' => Ids::os(99), 'motivo' => 'pagamento_recusado']],
+            'com pagamentoId'            => [['osId' => $os, 'orcamentoId' => Ids::os(99), 'pagamentoId' => Ids::os(77), 'motivo' => 'execucao_falhou']],
+            'orcamento_falhou'           => [['osId' => $os, 'motivo' => 'orcamento_falhou']],
+            'orcamento_recusado'         => [['osId' => $os, 'motivo' => 'orcamento_recusado']],
+            'aprovacao_expirada'         => [['osId' => $os, 'motivo' => 'aprovacao_expirada']],
+            'campo que o contrato não conhece' => [['osId' => $os, 'motivo' => 'execucao_falhou', 'novoCampo' => 'x']],
+        ];
+    }
+
+    #[DataProvider('cancelamentosValidosSegundoOContrato')]
+    public function test_o_consumidor_aceita_todo_cancelamento_valido_segundo_o_contrato(array $corpo): void
+    {
+        $envelope = Envelope::novo('CancelarExecucao', self::SAGA_ID, null, $corpo, '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+
+        // Falha o teste se o comando de exemplo deixar de ser válido no contrato (o exemplo envelheceu).
+        $this->assertSame([], $this->contrato->validarEnvelope('Compensacao', $envelope->toJson()));
+
+        $this->cancelador()->handle($envelope);
+
+        $this->addToAssertionCount(1); // aceitar = não lançar: recusar mandaria a compensação para a DLQ
+    }
+
+    /** @return array<string, array{0: array<string, mixed>}> o que o contrato diz ser inválido e o consumidor também recusa */
+    public static function cancelamentosInvalidos(): array
+    {
+        $os = Ids::os(10);
+
+        return [
+            'osId ausente'        => [['motivo' => 'execucao_falhou']],
+            'motivo ausente'      => [['osId' => $os]],
+            'osId que não é UUID' => [['osId' => '123', 'motivo' => 'execucao_falhou']],
+            'orcamentoId inválido' => [['osId' => $os, 'orcamentoId' => 'x', 'motivo' => 'execucao_falhou']],
+        ];
+    }
+
+    #[DataProvider('cancelamentosInvalidos')]
+    public function test_o_consumidor_recusa_o_que_o_contrato_recusa_no_cancelamento(array $corpo): void
+    {
+        $envelope = Envelope::novo('CancelarExecucao', self::SAGA_ID, null, $corpo, null);
+
+        $this->assertNotSame([], $this->contrato->validarEnvelope('Compensacao', $envelope->toJson()));
+
+        $this->expectException(MensagemInvalida::class);
+
+        $this->cancelador()->handle($envelope);
+    }
+
+    /**
+     * O contrato (Parte 4) diz que o motivo de cancelamento é um dos de MotivoCompensacao; o consumidor
+     * aceita qualquer texto de propósito. Este teste só trava a lista que a Execução conhece.
+     */
+    public function test_os_motivos_de_compensacao_do_contrato_sao_os_que_a_execucao_conhece(): void
+    {
+        $motivos = array_map(fn ($c) => $c[0]['motivo'], self::cancelamentosValidosSegundoOContrato());
+
+        foreach (['orcamento_falhou', 'orcamento_recusado', 'aprovacao_expirada', 'pagamento_recusado', 'execucao_falhou'] as $motivo) {
+            $this->assertContains($motivo, $motivos);
+        }
+    }
+
+    // ── publicação: execucao.iniciada / execucao.concluida / execucao.falhou ──
 
     public function test_os_eventos_que_a_execucao_publica_cumprem_o_contrato(): void
     {
@@ -211,8 +284,10 @@ class AsyncApiContratoTest extends TestCase
 
         $eventos->iniciada($this->evento(TipoEvento::EXECUCAO_INICIADA, '14:00:00', $saga));
         $eventos->concluida($this->evento(TipoEvento::EXECUCAO_FINALIZADA, '16:30:00', $saga), new \DateTimeImmutable('2026-11-02 14:00:00', new \DateTimeZone('UTC')));
+        $eventos->falhou($this->evento(TipoEvento::EXECUCAO_FALHOU, '16:40:00', $saga), 'Peça com defeito', new \DateTimeImmutable('2026-11-02 14:00:00', new \DateTimeZone('UTC')));
+        $eventos->falhou($this->evento(TipoEvento::EXECUCAO_FALHOU, '16:50:00', $saga, semMecanico: true), 'cancelada');
 
-        $this->assertSame(['execucao.iniciada', 'execucao.concluida'], $publicador->routingKeys());
+        $this->assertSame(['execucao.iniciada', 'execucao.concluida', 'execucao.falhou', 'execucao.falhou'], $publicador->routingKeys());
 
         foreach ($publicador->publicadas as ['routingKey' => $chave, 'envelope' => $envelope]) {
             $this->assertSame(
@@ -259,39 +334,47 @@ class AsyncApiContratoTest extends TestCase
 
     public function test_as_routing_keys_publicadas_sao_as_que_o_contrato_atribui_a_execucao(): void
     {
-        $publicadas = ['execucao.iniciada', 'execucao.concluida'];
+        $publicadas = ['execucao.iniciada', 'execucao.concluida', 'execucao.falhou'];
 
         foreach ($publicadas as $chave) {
             $this->assertContains($chave, $this->routingKeysDaExecucaoNoContrato());
         }
     }
 
-    // ── lacunas conhecidas ────────────────────────────────────────
+    // ── cobertura do contrato ─────────────────────────────────────
 
-    public function test_lacunas_conhecidas_em_relacao_ao_contrato(): void
+    /**
+     * Sem lacunas: a Execução publica todas as routing keys que o contrato lhe atribui e consome as
+     * duas filas de comando. Se o contrato ganhar mensagem nova para a Execução, este teste quebra.
+     */
+    public function test_a_execucao_cobre_tudo_que_o_contrato_lhe_atribui(): void
     {
-        $implementadas = ['execucao.iniciada', 'execucao.concluida'];
+        $implementadas = ['execucao.iniciada', 'execucao.concluida', 'execucao.falhou'];
 
-        $this->assertSame(
-            ['execucao.falhou'],
-            array_values(array_diff($this->routingKeysDaExecucaoNoContrato(), $implementadas)),
-            'Mudou o que a Execução publica ou o que o contrato prevê. Atualize as lacunas (e o README).'
+        $this->assertEqualsCanonicalizing(
+            $implementadas,
+            $this->routingKeysDaExecucaoNoContrato(),
+            'Mudou o que a Execução publica ou o que o contrato prevê. Revise e atualize o README.'
         );
 
-        $consumidas = [$this->contrato->enderecoDoCanal('enviarParaExecucao')];
         $filasDeComandoDaExecucao = [
             $this->contrato->enderecoDoCanal('enviarParaExecucao'),
             $this->contrato->enderecoDoCanal('cancelarExecucao'),
         ];
 
-        $this->assertSame(
-            ['execucao.cancelar-execucao'],
-            array_values(array_diff($filasDeComandoDaExecucao, $consumidas)),
-            'Mudou o que a Execução consome. Atualize as lacunas (e o README).'
+        $this->assertEqualsCanonicalizing(
+            $filasDeComandoDaExecucao,
+            array_keys($this->consumidor()->filas()),
+            'Mudou o que a Execução consome. Revise e atualize o README.'
         );
     }
 
     // ── apoio ─────────────────────────────────────────────────────
+
+    private function consumidor(): ConsumidorDeComandos
+    {
+        return new ConsumidorDeComandos(new ConexaoRabbitMq(), $this->handler(), $this->cancelador());
+    }
 
     private function comando(array $corpo): Envelope
     {
@@ -306,14 +389,21 @@ class AsyncApiContratoTest extends TestCase
         return new EnviarParaExecucaoHandler($servico, new MensagensProcessadasEmMemoria());
     }
 
-    private function evento(TipoEvento $tipo, string $hora, ContextoSaga $saga): EventoTimeline
+    private function cancelador(): CancelarExecucaoHandler
+    {
+        $eventos = new EventosDeExecucao(new PublicadorEmMemoria());
+
+        return new CancelarExecucaoHandler(new ExecucaoService(new TimelineEmMemoria(), $this->fila, $eventos), new MensagensProcessadasEmMemoria());
+    }
+
+    private function evento(TipoEvento $tipo, string $hora, ContextoSaga $saga, bool $semMecanico = false): EventoTimeline
     {
         return new EventoTimeline(
             osId: Ids::os(10),
             tipo: $tipo,
             statusAnterior: StatusExecucao::APROVADA,
             statusNovo: StatusExecucao::EM_EXECUCAO,
-            mecanicoId: Ids::mecanico(7),
+            mecanicoId: $semMecanico ? null : Ids::mecanico(7),
             duracaoSegundos: null,
             observacao: null,
             traceId: null,

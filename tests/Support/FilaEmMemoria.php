@@ -83,6 +83,14 @@ class FilaEmMemoria implements FilaExecucaoRepositoryInterface
         return $existia;
     }
 
+    public function retirar(string $osId): ?ItemFila
+    {
+        $item = $this->fila[$osId] ?? null;
+        unset($this->fila[$osId]);
+
+        return $item;
+    }
+
     public function osEmExecucao(string $mecanicoId): ?string
     {
         return $this->emExecucao[$mecanicoId] ?? null;
