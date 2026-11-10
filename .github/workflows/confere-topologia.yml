@@ -1,0 +1,36 @@
+name: Confere topologia do RabbitMQ
+
+# O docker/rabbitmq/ deste repositorio e uma copia de desenvolvimento; a fonte da topologia e
+# o rabbitmq/definitions.json do oficina-infra-fase4 (contrato v1.1, "Fonte unica da topologia").
+# Fila com nome divergente nao quebra teste nem deploy: o servico sobe e consome uma fila que
+# ninguem publica. Este job e o que pega isso.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  topologia:
+    name: Copia local x fonte (infra)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixa a fonte da topologia (oficina-infra-fase4)
+        uses: actions/checkout@v4
+        with:
+          repository: Ralima0711/oficina-infra-fase4
+          ref: main
+          path: infra
+
+      - name: Testes do script de conferencia
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Confere a copia e os nomes que o servico usa contra a fonte
+        run: python3 scripts/confere-topologia.py --fonte infra/rabbitmq/definitions.json
