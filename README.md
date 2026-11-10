@@ -56,7 +56,7 @@ O comando é idempotente: o mesmo `messageId` é descartado e um novo `CancelarE
 
 **Falha do reparo.** O mecânico informa `POST /api/execucao/os/{osId}/falhar` (`mecanicoId` e `motivo`): a OS vai de `EM_EXECUCAO` para `FALHOU`, o mecânico é liberado e a Execução publica `execucao.falhou` com o motivo. É isto que dá início à compensação da saga; o orquestrador então manda `CancelarExecucao`, que encontra a OS já encerrada e é pulado.
 
-Os eventos voltam no **mesmo trace** do comando, com o mesmo `sagaId` e `causationId` igual ao `messageId` do comando, mesmo com o mecânico agindo em outra requisição (ver `docs/contrato-observabilidade.md`). Mensagem fora do contrato ou que falha ao ser tratada vai para a DLQ da sua fila (`dlq.execucao.enviar-para-execucao`, `dlq.execucao.cancelar-execucao`).
+Os eventos voltam no **mesmo trace** do comando, com o mesmo `sagaId` e `causationId` igual ao `messageId` do comando, mesmo com o mecânico agindo em outra requisição (ver o contrato de observabilidade no `oficina-infra-fase4`). Mensagem fora do contrato ou que falha ao ser tratada vai para a DLQ da sua fila (`dlq.execucao.enviar-para-execucao`, `dlq.execucao.cancelar-execucao`).
 
 > **Limites conhecidos:** a publicação não é transacional (o evento sai depois de gravar a transição; se o broker cair nesse intervalo a API responde 503 e a transição fica gravada sem o evento). Finalizar e cancelar a mesma OS exatamente ao mesmo tempo pode gravar os dois fins (o índice único é por tipo de evento, e a janela é de milissegundos). Uma OS enfileirada direto por `POST /api/execucao/fila` não tem saga e não publica evento. Comando fora do contrato (corpo inválido) vai para a DLQ da fila dele sem evento de falha, embora a regra 6 da Parte 5 do contrato peça o evento para campo essencial inválido: fica como pendência a alinhar com o orquestrador, porque o payload de `execucao.falhou` exige um `osId` válido.
 >
@@ -92,7 +92,7 @@ Use este compose **ou** o do `oficina-infra-fase4`, não os dois ao mesmo tempo:
 
 ```bash
 python3 scripts/confere-topologia.py --fonte ../oficina-infra-fase4/rabbitmq/definitions.json
-python3 -m unittest discover -s scripts   # testes do próprio script
+python3 -m unittest discover -s scripts # testes do próprio script
 ```
 
 > O `k8s/scripts/confere-filas.py` do infra confere outra coisa: os ConfigMaps dos manifestos contra o `definitions.json` do próprio infra. Ele roda no CI do infra, não aqui.
@@ -155,7 +155,7 @@ O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do O
 | `docs/adrs-fase4.md` | ADR-0007 a ADR-0014 |
 | `docs/asyncapi.yaml` | Contrato AsyncAPI dos eventos |
 | `docs/guia-testes-cobertura.md` | Pirâmide de testes e meta de 80% |
-| `docs/contrato-observabilidade.md` | Tracing e logs: propagação do `traceparent` e formato do log |
+| `oficina-infra-fase4` → `docs/contrato-observabilidade.md` | Tracing e logs: propagação do `traceparent` e formato do log. Vale para os três serviços; este repo é a implementação de referência |
 
 ## Regras do repositório
 
