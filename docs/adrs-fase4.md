@@ -13,6 +13,8 @@
 - ADR-0010 — RabbitMQ como message broker
 - ADR-0011 — Contramedidas para a perda de isolamento na Saga
 - ADR-0012 — Descoberta de serviços pelo Kubernetes, sem service registry dedicado
+- ADR-0013 — Idempotência: o comportamento é contrato, a técnica varia por banco
+- ADR-0014 — Comando inválido num participante da Saga
 
 ---
 
@@ -165,6 +167,71 @@ Service mesh (Istio, hands-on da Aula 5 de Parte II) também fica fora: em 33 di
 - (+) O padrão está atendido, só que pela plataforma em vez de por biblioteca.
 - (−) Sem as funcionalidades avançadas de um registry (health checks customizados, metadados de versão).
 - (−) Amarra a solução ao Kubernetes; fora dele, a decisão teria que ser revista.
+
+---
+
+## ADR-0013 — Idempotência: o comportamento é contrato, a técnica varia por banco
+
+**Status:** Aceito · **Data:** 02/11/2026
+
+### Contexto
+O contrato exige que todo consumidor descarte `messageId` já processado. Na implementação apareceram **duas soluções diferentes para o mesmo requisito**, e não por descuido — por limite de banco:
+
+- O **OS Service** e o **Billing** usam PostgreSQL. Dá para inserir o `messageId` **dentro da mesma transação** que aplica os efeitos: falhou, o rollback desfaz os dois.
+- A **Execução** usa MongoDB, sem transação multi-documento nesta configuração. Ali o consumidor **marca antes** dos efeitos e **libera** na exceção.
+
+A divergência foi descoberta comparando o documento do Johny com o código do David, depois de os dois já terem decidido sozinhos.
+
+A pergunta: padronizar, ou aceitar duas formas?
+
+### Decisão
+**O contrato exige o comportamento, não a técnica.** As duas formas ficam, documentadas lado a lado na Parte 5 do contrato de eventos, com o risco de cada uma.
+
+A forma transacional é melhor e deve ser usada **sempre que o banco permitir**.
+
+| Forma | Onde | Queda do processo no meio |
+|---|---|---|
+| **Transacional** | OS Service, Billing (Postgres) | Seguro: ou tudo foi gravado, ou nada. ACK só depois do commit |
+| **Marca-antes** | Execução (Mongo) | Exceção tratada é segura. Queda do processo deixa a marca presa e o retry descarta — efeito pela metade |
+
+Padronizar no transacional exigiria mover o registro de idempotência da Execução para um Postgres só para isso — um quarto banco num serviço que não precisa dele. Padronizar no marca-antes jogaria fora a garantia melhor que o Postgres dá de graça aos outros dois.
+
+### Consequências
+- (+) Cada serviço usa a garantia mais forte que o banco dele oferece, em vez de nivelar por baixo.
+- (+) Nenhum serviço ganha um banco a mais só para satisfazer uma uniformidade de papel.
+- (+) A divergência fica **registrada e justificada**, em vez de existir sem ninguém saber.
+- (−) Duas formas para revisar e explicar, em vez de uma.
+- (−) A janela do marca-antes é real: queda do processo entre marcar e aplicar perde o efeito. Aceita conscientemente — a janela é curta, o efeito é uma OS que não entra na fila, e o sintoma aparece no read model.
+
+---
+
+## ADR-0014 — Comando inválido num participante da Saga
+
+**Status:** Aceito · **Data:** 02/11/2026
+
+### Contexto
+Um teste de contrato na Execução, rodando contra o `asyncapi.yaml`, encontrou um comando com `prioridade` fora da faixa válida. A reação natural — recusar e deixar a mensagem ir para a DLQ — se mostrou **pior que aceitar**: o orquestrador fica esperando uma resposta que nunca vem, e a Saga trava sem erro visível em lugar nenhum.
+
+Validação de comando numa Saga não funciona como validação de API. Numa API, recusar devolve 422 a quem chamou e o assunto acaba. Numa Saga, quem chamou não está esperando resposta síncrona — está esperando um **evento**. Recusar em silêncio é o mesmo que sumir.
+
+### Decisão
+Todo participante responde sempre, por um destes três caminhos:
+
+| Tipo de problema | O que o participante faz |
+|---|---|
+| Campo **acessório** fora do domínio válido (`prioridade: 9`) | **Ajusta ao válido**, registra em log com o valor original, executa o comando |
+| Campo **essencial** ausente, malformado ou inconsistente (`osId` que não é UUID, valor negativo) | **Publica evento de falha** do passo, com motivo. A Saga compensa |
+| Erro transitório (banco fora, API externa fora) | **Retry** com backoff até o limite. Esgotado, publica evento de falha |
+
+Nenhum dos três é "descartar em silêncio", e nenhum é "DLQ e acabou". A DLQ serve para mensagem que o serviço não conseguiu nem interpretar — e mesmo aí, só depois de publicar a falha.
+
+Virou a regra 6 da Parte 5 do contrato de eventos.
+
+### Consequências
+- (+) A Saga nunca trava esperando uma resposta que não vem. É a regra "toda falha publica evento" aplicada também a erro de contrato, não só a erro de execução.
+- (+) A distinção acessório/essencial é explícita, em vez de ficar a critério de quem escreve cada consumidor.
+- (−) O participante aceita comando levemente fora do contrato, o que mascara bug do produtor. Mitigação: o ajuste é **sempre** registrado em log, e o teste de contrato continua reprovando no pipeline de quem publica.
+- (−) Classificar um campo como acessório ou essencial é julgamento, não regra mecânica. Em dúvida, trata como essencial: falhar a Saga é recuperável, executar errado nem sempre.
 
 ---
 
