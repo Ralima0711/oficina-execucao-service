@@ -16,6 +16,7 @@
         "predis/predis": "^3.7"
     },
     "require-dev": {
+        "behat/behat": "^4.0",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.1",
         "opis/json-schema": "^2.6",
@@ -33,6 +34,7 @@
         }
     },
     "scripts": {
+        "bdd": "behat --no-colors",
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
             "@php artisan package:discover --ansi"
