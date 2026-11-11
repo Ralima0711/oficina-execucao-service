@@ -1,0 +1,43 @@
+name: CI/CD
+
+# Ate 12/11 este repositorio tinha so o confere-topologia.yml — que e otimo e
+# continua valendo, mas nao roda teste nenhum. O pipeline reutilizavel existia
+# no oficina-infra-fase4 e nao era chamado por ninguem.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: Ralima0711/oficina-infra-fase4/.github/workflows/ci-cd-servico.yml@main
+    with:
+      servico: execucao-service
+      # 8.2 e nao 8.4: e a versao do Dockerfile deste servico.
+      php-version: "8.2"
+
+      # mongodb e sockets sao as mesmas que o Dockerfile instala pelo
+      # install-php-extensions.
+      extensoes: "mbstring, pdo_sqlite, mongodb, sockets"
+
+      db-connection: sqlite
+
+      # PROVISORIO: escolhido sem ter medido a cobertura deste servico.
+      cobertura-minima: 50
+
+      sonar-project-key: ""
+
+      imagem: ralima0711/oficina-execucao-service
+      manifestos: k8s/execucao-service
+      deploy: false
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
