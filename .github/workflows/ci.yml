@@ -28,7 +28,15 @@ jobs:
       # PROVISORIO: escolhido sem ter medido a cobertura deste servico.
       cobertura-minima: 50
 
-      sonar-project-key: ""
+      # Vazio pulava o job inteiro. O projeto existe no SonarQube Cloud desde
+      # 13/11 e o SONAR_TOKEN esta cadastrado nos quatro repositorios; o
+      # Automatic Analysis foi desligado no projeto, senao ele recusa a
+      # analise que vem do CI.
+      #
+      # A chave vem do SonarQube Cloud e tem R maiusculo: ela deriva do nome
+      # da conta do GitHub (Ralima0711), nao da chave da organizacao
+      # (ralima0711, minuscula). As duas convivem e e facil trocar.
+      sonar-project-key: Ralima0711_oficina-execucao-service
 
       imagem: ralima0711/oficina-execucao-service
       manifestos: k8s/execucao-service
