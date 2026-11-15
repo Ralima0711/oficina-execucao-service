@@ -307,6 +307,33 @@ class RabbitMqFluxoTest extends TestCase
         $this->assertCount(1, $this->app->make(FilaExecucaoRepositoryInterface::class)->listar(), 'O comando válido da outra fila foi tratado.');
     }
 
+    public function test_comando_artisan_do_worker_consome_a_fila_e_informa_quantas_tratou(): void
+    {
+        $this->publicarComando($this->comando(['prioridade' => 2]));
+
+        $this->artisan('execucao:consumir', ['--max' => 1, '--ocioso' => 5])
+            ->expectsOutput('Consumindo ' . self::FILA_COMANDO . ', ' . self::FILA_CANCELAR . '...')
+            ->expectsOutput('Mensagens tratadas: 1')
+            ->assertSuccessful();
+
+        $fila = $this->app->make(FilaExecucaoRepositoryInterface::class)->listar();
+        $this->assertCount(1, $fila);
+        $this->assertSame(Ids::os(10), $fila[0]->osId);
+        $this->assertSame(2, $fila[0]->prioridade);
+        $this->assertSame(0, $this->contarMensagens(self::FILA_COMANDO), 'A mensagem foi confirmada (ack).');
+    }
+
+    public function test_sem_mensagens_o_consumidor_para_depois_do_tempo_ocioso(): void
+    {
+        $inicio = microtime(true);
+
+        $tratadas = $this->consumidor()->executar(null, 1.0);
+
+        $this->assertSame(0, $tratadas);
+        $this->assertGreaterThanOrEqual(1.0, microtime(true) - $inicio, 'Esperou o tempo ocioso antes de parar.');
+        $this->assertLessThan(5.0, microtime(true) - $inicio, 'Parou sem precisar de limite de mensagens.');
+    }
+
     // ── apoio ─────────────────────────────────────────────────────
 
     /** @param array<string, mixed> $extraCorpo */
