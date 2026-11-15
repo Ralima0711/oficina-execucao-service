@@ -25,8 +25,9 @@ jobs:
 
       db-connection: sqlite
 
-      # PROVISORIO: escolhido sem ter medido a cobertura deste servico.
-      cobertura-minima: 50
+      # Medido no CI em 15/11/2026: 81,76% (1004/1228 instrucoes), sem excluir
+      # nada da medicao. O gate fica em 80, a meta do enunciado.
+      cobertura-minima: 80
 
       # Vazio pulava o job inteiro. O projeto existe no SonarQube Cloud desde
       # 13/11 e o SONAR_TOKEN esta cadastrado nos quatro repositorios; o
