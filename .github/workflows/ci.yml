@@ -40,11 +40,12 @@ jobs:
 
       imagem: ralima0711/oficina-execucao-service
       manifestos: k8s/execucao-service
-      # Deploy automatico na main (so na main: o pipeline reutilizavel ignora
-      # os outros ramos). Precisa dos secrets AWS_* e KUBECONFIG validos, que o
-      # atualiza-secrets-fase4.sh do oficina-infra-fase4 cadastra a cada sessao
-      # do AWS Academy. Sem eles o job FALHA em vermelho de proposito, nao pula.
-      deploy: true
+      # Deploy no EKS por DISPARO MANUAL (Actions > CI/CD > Run workflow, na main),
+      # dentro da janela do AWS Academy. Em push e PR fica false: as credenciais do
+      # lab expiram em horas, e deploy a cada push deixaria a main vermelha quase
+      # sempre. Precisa dos secrets AWS_* e KUBECONFIG validos (atualiza-secrets-fase4.sh
+      # do oficina-infra-fase4). Sem eles o job FALHA em vermelho de proposito.
+      deploy: ${{ github.event_name == 'workflow_dispatch' }}
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
