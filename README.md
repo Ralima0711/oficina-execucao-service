@@ -149,6 +149,21 @@ O **BDD** (`features/execucao.feature`, rodado com Behat) descreve o que o orque
 
 O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do OS Service e do Billing: se o contrato mudar, ou se a Execução deixar de cumprir algo (um campo, uma fila, um comando válido que o consumidor recusaria), ele quebra. Ele também falha se o contrato passar a atribuir à Execução uma mensagem que ela não trata. O helper `tests/Support/ContratoAsyncApi.php` pode ser copiado para os outros serviços.
 
+### Cobertura
+
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Ralima0711_oficina-execucao-service&metric=coverage)](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-execucao-service)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=Ralima0711_oficina-execucao-service&metric=alert_status)](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-execucao-service)
+
+Meta do enunciado: **80% por serviço — atingida.**
+
+| Medida | Valor | Evidência |
+|---|---|---|
+| Cobertura de linha medida pelo pipeline (pcov, `clover.xml`) | **81,76%** (1004 / 1228 instruções) | [execução do CI na `main`, 15/11/2026](https://github.com/Ralima0711/oficina-execucao-service/actions/runs/43748362104), job *Testes e cobertura* |
+| Cobertura no SonarQube Cloud (linha + condição, só `app/`) | **99,0%** | [painel do projeto](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-execucao-service) |
+| Gate do pipeline | **80%** | `cobertura-minima: 80` no `.github/workflows/ci.yml` |
+
+O job *Testes e cobertura* reprova o PR abaixo de 80%, e o Sonar cobra 80% no código novo de cada PR. Em cada execução do CI, o artefato `cobertura-execucao-service` traz o `clover.xml` completo, arquivo por arquivo. A meta foi atingida só com testes: nada foi excluído da medição.
+
 ## Documentação
 
 | Documento | O que é |
