@@ -40,7 +40,11 @@ jobs:
 
       imagem: ralima0711/oficina-execucao-service
       manifestos: k8s/execucao-service
-      deploy: false
+      # Deploy automatico na main (so na main: o pipeline reutilizavel ignora
+      # os outros ramos). Precisa dos secrets AWS_* e KUBECONFIG validos, que o
+      # atualiza-secrets-fase4.sh do oficina-infra-fase4 cadastra a cada sessao
+      # do AWS Academy. Sem eles o job FALHA em vermelho de proposito, nao pula.
+      deploy: true
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
