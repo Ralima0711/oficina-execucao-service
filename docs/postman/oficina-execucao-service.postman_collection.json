@@ -1,0 +1,964 @@
+{
+  "info": {
+    "name": "Execução Service — Fase 4",
+    "description": "Collection do Execução Service, derivada de docs/openapi.yaml. Se uma rota mudar num lugar e não no outro, uma delas está mentindo.\n\nNo fluxo normal a OS entra na fila pelo comando EnviarParaExecucao da saga (RabbitMQ), consumido pelo worker. Aqui ela entra pelo POST /api/execucao/fila, sem saga: por isso puxar, finalizar e falhar NÃO publicam execucao.iniciada/concluida/falhou nesta collection, e o 503 (broker fora) não é exercitado.\n\nOs ids (osId, mecanicoId) são gerados a cada execução nos pre-request scripts; os testes gravam o execucaoId para os requests seguintes. Rode as pastas em ordem, num ambiente com a fila vazia: 'Puxar próxima' tira a cabeça da fila, que precisa ser a OS que a collection acabou de enfileirar (ela entra com prioridade 5). No fim nenhuma OS da collection fica na fila e nenhum mecânico fica preso; a timeline (MongoDB) guarda os eventos, que a API não apaga.\n\nnewman: npx newman run docs/postman/oficina-execucao-service.postman_collection.json --env-var baseUrl=http://localhost:8080",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "osId",
+      "value": ""
+    },
+    {
+      "key": "mecanicoId",
+      "value": ""
+    },
+    {
+      "key": "execucaoId",
+      "value": ""
+    },
+    {
+      "key": "osIdFalha",
+      "value": ""
+    },
+    {
+      "key": "mecanicoIdFalha",
+      "value": ""
+    },
+    {
+      "key": "execucaoIdFalha",
+      "value": ""
+    },
+    {
+      "key": "osIdRemocao",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Saúde",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fila de execução",
+      "item": [
+        {
+          "name": "Enfileirar OS",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('osId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('mecanicoId', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const item = pm.response.json();",
+                  "pm.test('devolve a OS com execucaoId e posição', () => {",
+                  "    pm.expect(item.osId).to.eql(pm.collectionVariables.get('osId'));",
+                  "    pm.expect(item.execucaoId).to.be.a('string');",
+                  "    pm.expect(item.prioridade).to.eql(5);",
+                  "    pm.expect(item.posicao).to.be.at.least(1);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('execucaoId', item.execucaoId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osId}}\",\n  \"prioridade\": 5\n}"
+            },
+            "description": "Fora da saga: sem sagaId, nenhum evento execucao.* será publicado para esta OS."
+          }
+        },
+        {
+          "name": "Enfileirar de novo (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"já está na fila\"', () => pm.expect(pm.response.json().message).to.include('já está na fila'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Enfileirar inválido (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('erro de validação em osId', () => pm.expect(pm.response.json().errors).to.have.property('osId'));",
+                  "pm.test('erro de validação em prioridade', () => pm.expect(pm.response.json().errors).to.have.property('prioridade'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"nao-e-uuid\",\n  \"prioridade\": 9\n}"
+            }
+          }
+        },
+        {
+          "name": "Listar fila",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const fila = pm.response.json();",
+                  "pm.test('a OS está na fila', () => pm.expect(fila.map(i => i.osId)).to.include(pm.collectionVariables.get('osId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/fila"
+          }
+        },
+        {
+          "name": "Timeline de OS só enfileirada (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('message cita \"não tem eventos\"', () => pm.expect(pm.response.json().message).to.include('não tem eventos'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/timeline",
+            "description": "Enfileirar não escreve na timeline."
+          }
+        },
+        {
+          "name": "Puxar próxima (inicia a execução)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento EXECUCAO_INICIADA', () => pm.expect(e.tipo).to.eql('EXECUCAO_INICIADA'));",
+                  "pm.test('statusNovo EM_EXECUCAO', () => pm.expect(e.statusNovo).to.eql(\"EM_EXECUCAO\"));",
+                  "pm.test('é a OS enfileirada, com o mesmo execucaoId e sem saga', () => {",
+                  "    pm.expect(e.osId).to.eql(pm.collectionVariables.get('osId'));",
+                  "    pm.expect(e.execucaoId).to.eql(pm.collectionVariables.get('execucaoId'));",
+                  "    pm.expect(e.statusAnterior).to.eql('APROVADA');",
+                  "    pm.expect(e.sagaId).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila/proxima",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\"\n}"
+            },
+            "description": "Com saga, publicaria execucao.iniciada."
+          }
+        },
+        {
+          "name": "Puxar com mecânico ocupado (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"já está executando\"', () => pm.expect(pm.response.json().message).to.include('já está executando'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila/proxima",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Puxar sem mecanicoId (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('erro de validação em mecanicoId', () => pm.expect(pm.response.json().errors).to.have.property('mecanicoId'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila/proxima",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Timeline — reparo concluído",
+      "item": [
+        {
+          "name": "Nota de outro mecânico (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"está com o mecânico\"', () => pm.expect(pm.response.json().message).to.include('está com o mecânico'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/notas",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"00000000-0000-4000-8000-000000000001\",\n  \"texto\": \"Tentando anotar\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Registrar nota",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento NOTA', () => pm.expect(e.tipo).to.eql('NOTA'));",
+                  "pm.test('statusNovo None', () => pm.expect(e.statusNovo).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/notas",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\",\n  \"texto\": \"Pastilhas dianteiras no limite, discos ok\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Nota sem texto (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('erro de validação em texto', () => pm.expect(pm.response.json().errors).to.have.property('texto'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/notas",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Diagnóstico em OS em execução (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('message cita \"Somente ordens RECEBIDAS\"', () => pm.expect(pm.response.json().message).to.include('Somente ordens RECEBIDAS'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/diagnostico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Finalizar por outro mecânico (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"está com o mecânico\"', () => pm.expect(pm.response.json().message).to.include('está com o mecânico'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/finalizar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"00000000-0000-4000-8000-000000000001\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Finalizar (publica execucao.concluida)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento EXECUCAO_FINALIZADA', () => pm.expect(e.tipo).to.eql('EXECUCAO_FINALIZADA'));",
+                  "pm.test('statusNovo FINALIZADA', () => pm.expect(e.statusNovo).to.eql(\"FINALIZADA\"));",
+                  "pm.test('mesmo execucaoId do início', () => pm.expect(e.execucaoId).to.eql(pm.collectionVariables.get('execucaoId')));",
+                  "pm.test('duracaoSegundos é o tempo de reparo', () => pm.expect(e.duracaoSegundos).to.be.a('number'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/finalizar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\",\n  \"observacao\": \"Pastilhas trocadas e testadas\"\n}"
+            },
+            "description": "Com saga, publicaria execucao.concluida. Libera o mecânico."
+          }
+        },
+        {
+          "name": "Finalizar de novo (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('message cita \"status atual: FINALIZADA\"', () => pm.expect(pm.response.json().message).to.include('status atual: FINALIZADA'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/finalizar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Reenfileirar OS finalizada (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"FINALIZADA\"', () => pm.expect(pm.response.json().message).to.include('FINALIZADA'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Consultar timeline",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const tipos = pm.response.json().map(e => e.tipo);",
+                  "pm.test('início, nota e fim, em ordem', () => pm.expect(tipos).to.eql(['EXECUCAO_INICIADA', 'NOTA', 'EXECUCAO_FINALIZADA']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/os/{{osId}}/timeline"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Timeline — reparo com falha",
+      "item": [
+        {
+          "name": "Iniciar diagnóstico",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('osIdFalha', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('mecanicoIdFalha', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento DIAGNOSTICO_INICIADO', () => pm.expect(e.tipo).to.eql('DIAGNOSTICO_INICIADO'));",
+                  "pm.test('statusNovo EM_DIAGNOSTICO', () => pm.expect(e.statusNovo).to.eql(\"EM_DIAGNOSTICO\"));",
+                  "pm.test('saiu de RECEBIDA', () => pm.expect(e.statusAnterior).to.eql('RECEBIDA'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osIdFalha}}/diagnostico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoIdFalha}}\",\n  \"observacao\": \"Cliente relata barulho na frente\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Diagnóstico de novo (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('message cita \"status atual: EM_DIAGNOSTICO\"', () => pm.expect(pm.response.json().message).to.include('status atual: EM_DIAGNOSTICO'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osIdFalha}}/diagnostico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoIdFalha}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Enfileirar",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('execucaoIdFalha', pm.response.json().execucaoId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osIdFalha}}\",\n  \"prioridade\": 5\n}"
+            }
+          }
+        },
+        {
+          "name": "Puxar próxima",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento EXECUCAO_INICIADA', () => pm.expect(e.tipo).to.eql('EXECUCAO_INICIADA'));",
+                  "pm.test('statusNovo EM_EXECUCAO', () => pm.expect(e.statusNovo).to.eql(\"EM_EXECUCAO\"));",
+                  "pm.test('é a OS do fluxo de falha', () => pm.expect(e.osId).to.eql(pm.collectionVariables.get('osIdFalha')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila/proxima",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoIdFalha}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Falhar sem motivo (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('erro de validação em motivo', () => pm.expect(pm.response.json().errors).to.have.property('motivo'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osIdFalha}}/falhar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoIdFalha}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Falhar (publica execucao.falhou)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json();",
+                  "pm.test('evento EXECUCAO_FALHOU', () => pm.expect(e.tipo).to.eql('EXECUCAO_FALHOU'));",
+                  "pm.test('statusNovo FALHOU', () => pm.expect(e.statusNovo).to.eql(\"FALHOU\"));",
+                  "pm.test('motivo fica na observação', () => pm.expect(e.observacao).to.include('defeito de fábrica'));",
+                  "pm.test('mesmo execucaoId', () => pm.expect(e.execucaoId).to.eql(pm.collectionVariables.get('execucaoIdFalha')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/os/{{osIdFalha}}/falhar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"{{mecanicoIdFalha}}\",\n  \"motivo\": \"Peça com defeito de fábrica; reparo inviável\"\n}"
+            },
+            "description": "Com saga, publicaria execucao.falhou e o orquestrador compensaria. Libera o mecânico."
+          }
+        },
+        {
+          "name": "Reenfileirar OS que falhou (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('message cita \"FALHOU\"', () => pm.expect(pm.response.json().message).to.include('FALHOU'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osIdFalha}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Remoção da fila",
+      "item": [
+        {
+          "name": "Enfileirar",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('osIdRemocao', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('prioridade padrão 1', () => pm.expect(pm.response.json().prioridade).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/execucao/fila",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"osId\": \"{{osIdRemocao}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Remover da fila",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/execucao/fila/{{osIdRemocao}}"
+          }
+        },
+        {
+          "name": "Remover de novo (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('message cita \"não está na fila\"', () => pm.expect(pm.response.json().message).to.include('não está na fila'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/execucao/fila/{{osIdRemocao}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Métricas",
+      "item": [
+        {
+          "name": "Tempo médio por status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const linhas = pm.response.json();",
+                  "pm.test('lista com status, média e amostras', () => {",
+                  "    pm.expect(linhas).to.be.an('array').that.is.not.empty;",
+                  "    linhas.forEach(l => pm.expect(l).to.have.all.keys('status', 'tempoMedioSegundos', 'amostras'));",
+                  "});",
+                  "pm.test('tem espera na fila e tempo de reparo', () => pm.expect(linhas.map(l => l.status)).to.include.members(['APROVADA', 'EM_EXECUCAO']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/metricas/tempo-medio"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Erros de rota",
+      "item": [
+        {
+          "name": "Timeline de OS inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('message cita \"não tem eventos\"', () => pm.expect(pm.response.json().message).to.include('não tem eventos'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/os/00000000-0000-4000-8000-000000000000/timeline"
+          }
+        },
+        {
+          "name": "osId que não é UUID (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('message cita \"could not be found\"', () => pm.expect(pm.response.json().message).to.include('could not be found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/execucao/os/nao-e-uuid/timeline",
+            "description": "A rota tem whereUuid: o request nem chega ao controller."
+          }
+        }
+      ]
+    }
+  ]
+}

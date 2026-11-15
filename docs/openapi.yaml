@@ -1,0 +1,853 @@
+# Contrato HTTP do Execução Service — OpenAPI 3.0.3.
+#
+# Fonte de verdade são as rotas em routes/api.php, os controllers em
+# app/Interface/Http/Controllers/ e os FormRequests em
+# app/Interface/Http/Requests/. Erros de validação saem no formato padrão do
+# Laravel ({"message", "errors"}); erros de negócio viram {"message"} em
+# bootstrap/app.php: ConflitoException → 409, NaoEncontradoException → 404,
+# DomainException (transição inválida) → 422 e FalhaAoPublicarEvento → 503.
+#
+# As anotações em app/Interface/Http/Swagger/ExecucaoSwagger.php (l5-swagger)
+# alimentam o Swagger UI em /api/documentation; este arquivo é o contrato
+# versionado e foi conferido contra o código e contra o serviço rodando.
+#
+# A collection do Postman em docs/postman/ segue este documento. Se uma rota
+# mudar aqui e lá não (ou o contrário), uma delas está mentindo.
+openapi: 3.0.3
+info:
+  title: Execução Service — Execução e Produção
+  description: |
+    API do serviço que cuida da **fila de execução** (Redis) e da **timeline
+    de diagnóstico e reparo** de cada OS (MongoDB). Participante da saga
+    orquestrada pelo OS Service (ADRs 0007, 0008 e 0010 em
+    `docs/adrs-fase4.md`).
+
+    **Como a OS chega aqui.** No fluxo normal a OS entra na fila pelo comando
+    `EnviarParaExecucao` (routing key `execucao.enviar-para-execucao`), que o
+    orquestrador publica no RabbitMQ depois do pagamento confirmado. Quem
+    consome é o worker (`php artisan execucao:consumir`), não esta API. O
+    `POST /execucao/fila` existe para operação e testes: uma OS enfileirada
+    por ele **não tem saga**, e por isso nenhum evento é publicado para ela.
+
+    **O que volta para a saga.** Quando a OS veio pela saga, a API publica os
+    eventos do contrato (`docs/contrato-eventos-fase4.md`, Parte 4):
+
+    | Rota | Evento publicado |
+    |---|---|
+    | `POST /execucao/fila/proxima` | `execucao.iniciada` |
+    | `POST /execucao/os/{osId}/finalizar` | `execucao.concluida` |
+    | `POST /execucao/os/{osId}/falhar` | `execucao.falhou` (o orquestrador compensa) |
+
+    A transição é gravada na timeline **antes** da publicação. Se o broker
+    recusar a mensagem, a resposta é `503` com a transição já gravada; repetir
+    a chamada devolve `422`, porque o status já mudou. A compensação
+    (`CancelarExecucao`) também chega só por mensagem.
+
+    **Mecânico.** Enquanto a autenticação entre serviços não está definida,
+    `mecanicoId` vem no corpo. A rota `/api/execucao` passa pelo Kong sem JWT.
+
+    **Correlação.** Toda resposta traz `X-Request-Id` (o recebido ou um novo);
+    um `traceparent` recebido vira pai do span da requisição.
+
+    **Estados** (os nomes seguem o `StatusOrdem` do OS Service, mas o status
+    completo da OS continua sendo dele): `RECEBIDA → EM_DIAGNOSTICO →
+    (orçamento, aprovação e pagamento, fora daqui) → APROVADA (na fila) →
+    EM_EXECUCAO → FINALIZADA`; `APROVADA` ou `EM_EXECUCAO` → `FALHOU`
+    (terminal). Uma OS sem eventos na timeline é tratada como `RECEBIDA`.
+  version: 1.0.0
+
+# Sem autenticação: a rota /api/execucao passa pelo Kong sem o plugin jwt e o
+# mecânico vem no corpo. Quando houver JWT entre serviços, entra aqui.
+security: []
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local (docker-compose deste repositório; no compose do oficina-infra-fase4 a porta é 8083)
+  - url: /api
+    description: Pelo gateway Kong, no cluster (strip_path desligado; só /api/execucao é roteado)
+
+tags:
+  - name: Fila de execução
+    description: OS aprovadas esperando um mecânico (Redis).
+  - name: Timeline
+    description: Diagnóstico e reparo de cada OS (MongoDB).
+  - name: Métricas
+    description: Tempo médio por status, calculado a partir da timeline.
+  - name: Saúde
+    description: Liveness.
+
+paths:
+  /health:
+    get:
+      tags: [Saúde]
+      summary: Checagem de saúde
+      description: |
+        Responde sem tocar Redis, MongoDB nem RabbitMQ. Também existe em
+        `/health` (fora do prefixo `/api`), que é o caminho das probes do
+        Kubernetes. Não é roteado pelo Kong.
+      operationId: health
+      responses:
+        '200':
+          description: Serviço no ar.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+              example:
+                status: ok
+
+  /execucao/fila:
+    get:
+      tags: [Fila de execução]
+      summary: Lista a fila na ordem de atendimento
+      description: |
+        Ordem de atendimento: maior `prioridade` primeiro e, dentro da mesma
+        prioridade, quem chegou antes. `posicao` 1 é a próxima a ser puxada.
+        Fila vazia devolve `[]`.
+      operationId: listarFila
+      responses:
+        '200':
+          description: Itens da fila, em ordem.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ItemFila'
+              example:
+                - osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                  execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                  prioridade: 3
+                  posicao: 1
+                  enfileiradaEm: '2026-11-15T11:50:52.209Z'
+                - osId: 6a5bf5c9-fc12-4d24-a475-a0028e63e2e9
+                  execucaoId: 24420d91-dda5-46ee-9117-29ccacce22fe
+                  prioridade: 1
+                  posicao: 2
+                  enfileiradaEm: '2026-11-15T11:50:52.527Z'
+    post:
+      tags: [Fila de execução]
+      summary: Enfileira uma OS (operação/testes; sem saga)
+      description: |
+        No fluxo da saga a OS entra na fila pelo comando `EnviarParaExecucao`,
+        consumido pelo worker. Esta rota faz o mesmo sem contexto de saga:
+        o `execucaoId` nasce aqui, mas nenhum evento `execucao.*` será
+        publicado para esta OS.
+
+        Não escreve na timeline: logo depois de enfileirar, o
+        `GET /execucao/os/{osId}/timeline` ainda responde `404`.
+      operationId: enfileirar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Enfileirar'
+            example:
+              osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+              prioridade: 3
+      responses:
+        '201':
+          description: OS enfileirada; `posicao` é a posição dela no momento.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemFila'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                prioridade: 3
+                posicao: 1
+                enfileiradaEm: '2026-11-15T11:50:52.209Z'
+        '409':
+          description: |
+            A OS já está na fila, ou já está `EM_EXECUCAO`, `FINALIZADA` ou
+            `FALHOU` (terminal) e não volta para a fila.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              examples:
+                jaNaFila:
+                  value:
+                    message: A OS 0ef33f24-9e99-4119-befb-9e3b42e8e660 já está na fila de execução.
+                jaFinalizada:
+                  value:
+                    message: A OS 0ef33f24-9e99-4119-befb-9e3b42e8e660 já está FINALIZADA e não pode voltar para a fila.
+        '422':
+          description: Erro de validação (`osId` não é UUID, `prioridade` fora de 1..5).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+              example:
+                message: The os id field must be a valid UUID. (and 1 more error)
+                errors:
+                  osId: [The os id field must be a valid UUID.]
+                  prioridade: [The prioridade field must be between 1 and 5.]
+
+  /execucao/fila/proxima:
+    post:
+      tags: [Fila de execução]
+      summary: Mecânico puxa a próxima OS e inicia a execução
+      description: |
+        Operação atômica no Redis: a OS da cabeça da fila sai dela e o
+        mecânico fica ocupado com ela até finalizar ou falhar. A timeline
+        ganha `EXECUCAO_INICIADA` (`APROVADA → EM_EXECUCAO`) e, se a OS veio
+        pela saga, é publicado `execucao.iniciada`.
+
+        `duracaoSegundos` é o tempo que a OS esperou na fila.
+      operationId: puxarProxima
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcaoMecanico'
+            example:
+              mecanicoId: 22222222-2222-4222-8222-222222222222
+      responses:
+        '200':
+          description: Execução iniciada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoTimeline'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                sagaId: null
+                tipo: EXECUCAO_INICIADA
+                statusAnterior: APROVADA
+                statusNovo: EM_EXECUCAO
+                mecanicoId: 22222222-2222-4222-8222-222222222222
+                duracaoSegundos: 2
+                observacao: null
+                traceId: 70fd5461a76f7ef01e6344d55149311a
+                ocorridoEm: '2026-11-15T11:50:54.088Z'
+        '404':
+          description: Fila vazia.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              example:
+                message: A fila de execução está vazia.
+        '409':
+          description: |
+            O mecânico já está executando outra OS (a trava só cai ao
+            finalizar ou falhar). Também ocorre, raramente, se a OS já tinha
+            `EXECUCAO_INICIADA` na timeline: nesse caso ela é descartada da
+            fila e o mecânico é liberado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              example:
+                message: O mecânico 22222222-2222-4222-8222-222222222222 já está executando a OS 0ef33f24-9e99-4119-befb-9e3b42e8e660.
+        '422':
+          $ref: '#/components/responses/ErroValidacao'
+        '503':
+          $ref: '#/components/responses/BrokerIndisponivel'
+
+  /execucao/fila/{osId}:
+    delete:
+      tags: [Fila de execução]
+      summary: Remove uma OS da fila
+      description: |
+        Só tira da fila (e descarta o `execucaoId` reservado). Não grava
+        timeline nem publica evento — a compensação da saga é o comando
+        `CancelarExecucao`, que chega por mensagem.
+      operationId: removerDaFila
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      responses:
+        '204':
+          description: Removida. Sem corpo.
+        '404':
+          description: |
+            A OS não está na fila — ou o `osId` não é UUID e a rota nem casa
+            (ver `RotaNaoEncontrada`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/RotaNaoEncontrada'
+              example:
+                message: A OS 6a5bf5c9-fc12-4d24-a475-a0028e63e2e9 não está na fila de execução.
+
+  /execucao/os/{osId}/timeline:
+    get:
+      tags: [Timeline]
+      summary: Timeline de diagnóstico e reparo da OS
+      description: Eventos da OS, do mais antigo ao mais recente (notas incluídas).
+      operationId: consultarTimeline
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      responses:
+        '200':
+          description: Eventos da OS.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventoTimeline'
+              example:
+                - osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                  execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                  sagaId: null
+                  tipo: EXECUCAO_INICIADA
+                  statusAnterior: APROVADA
+                  statusNovo: EM_EXECUCAO
+                  mecanicoId: 22222222-2222-4222-8222-222222222222
+                  duracaoSegundos: 2
+                  observacao: null
+                  traceId: 70fd5461a76f7ef01e6344d55149311a
+                  ocorridoEm: '2026-11-15T11:50:54.088Z'
+                - osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                  execucaoId: null
+                  sagaId: null
+                  tipo: NOTA
+                  statusAnterior: null
+                  statusNovo: null
+                  mecanicoId: 22222222-2222-4222-8222-222222222222
+                  duracaoSegundos: null
+                  observacao: Pastilhas no limite
+                  traceId: c6ae60dfa1caf39f94955d60ce23d6c3
+                  ocorridoEm: '2026-11-15T11:50:55.492Z'
+                - osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                  execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                  sagaId: null
+                  tipo: EXECUCAO_FINALIZADA
+                  statusAnterior: EM_EXECUCAO
+                  statusNovo: FINALIZADA
+                  mecanicoId: 22222222-2222-4222-8222-222222222222
+                  duracaoSegundos: 3
+                  observacao: ok
+                  traceId: 8ae8e9736733b83766e22124bc829962
+                  ocorridoEm: '2026-11-15T11:50:57.121Z'
+        '404':
+          description: |
+            A OS não tem eventos na timeline (inclusive uma OS que só foi
+            enfileirada), ou o `osId` não é UUID.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/RotaNaoEncontrada'
+              example:
+                message: A OS 0ef33f24-9e99-4119-befb-9e3b42e8e660 não tem eventos na timeline.
+
+  /execucao/os/{osId}/diagnostico:
+    post:
+      tags: [Timeline]
+      summary: Inicia o diagnóstico (RECEBIDA → EM_DIAGNOSTICO)
+      description: |
+        Só para OS sem transição na timeline (tratada como `RECEBIDA`). Não
+        publica evento: o diagnóstico que inicia a saga é o
+        `POST /ordens-servico/{id}/diagnostico` do OS Service.
+      operationId: iniciarDiagnostico
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcaoMecanico'
+            example:
+              mecanicoId: 22222222-2222-4222-8222-222222222222
+              observacao: Cliente relata barulho na frente
+      responses:
+        '201':
+          description: Diagnóstico iniciado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoTimeline'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: null
+                sagaId: null
+                tipo: DIAGNOSTICO_INICIADO
+                statusAnterior: RECEBIDA
+                statusNovo: EM_DIAGNOSTICO
+                mecanicoId: 22222222-2222-4222-8222-222222222222
+                duracaoSegundos: null
+                observacao: Cliente relata barulho na frente
+                traceId: 0af7651916cd43dd8448eb211c80319c
+                ocorridoEm: '2026-11-15T11:50:50.000Z'
+        '409':
+          description: |
+            Duas requisições simultâneas passaram juntas pela checagem de
+            status; o índice único da timeline barrou a segunda.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+              example:
+                message: A OS 0ef33f24-9e99-4119-befb-9e3b42e8e660 já tem o evento DIAGNOSTICO_INICIADO.
+        '422':
+          description: |
+            A OS não está `RECEBIDA` (`{"message"}`) ou erro de validação
+            (`{"message", "errors"}`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/ErroValidacao'
+              example:
+                message: 'Somente ordens RECEBIDAS podem iniciar diagnóstico (status atual: EM_EXECUCAO).'
+
+  /execucao/os/{osId}/notas:
+    post:
+      tags: [Timeline]
+      summary: Registra uma anotação do mecânico
+      description: |
+        Só durante o diagnóstico ou a execução, e só pelo mecânico
+        responsável. Nota não muda o estado e pode se repetir; não carrega
+        `execucaoId`.
+      operationId: registrarNota
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Nota'
+            example:
+              mecanicoId: 22222222-2222-4222-8222-222222222222
+              texto: Pastilhas no limite
+      responses:
+        '201':
+          description: Nota registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoTimeline'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: null
+                sagaId: null
+                tipo: NOTA
+                statusAnterior: null
+                statusNovo: null
+                mecanicoId: 22222222-2222-4222-8222-222222222222
+                duracaoSegundos: null
+                observacao: Pastilhas no limite
+                traceId: c6ae60dfa1caf39f94955d60ce23d6c3
+                ocorridoEm: '2026-11-15T11:50:55.492Z'
+        '409':
+          $ref: '#/components/responses/OutroMecanico'
+        '422':
+          description: |
+            A OS não está `EM_DIAGNOSTICO` nem `EM_EXECUCAO` (`{"message"}`)
+            ou erro de validação (`{"message", "errors"}`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/ErroValidacao'
+              example:
+                message: The texto field is required.
+                errors:
+                  texto: [The texto field is required.]
+
+  /execucao/os/{osId}/finalizar:
+    post:
+      tags: [Timeline]
+      summary: Encerra o reparo (EM_EXECUCAO → FINALIZADA) e publica execucao.concluida
+      description: |
+        Grava `EXECUCAO_FINALIZADA`, libera o mecânico para puxar a próxima
+        OS e, se a OS veio pela saga, publica `execucao.concluida` para o
+        orquestrador (que leva a OS a `FINALIZADA`). `duracaoSegundos` é o
+        tempo do reparo, desde `EXECUCAO_INICIADA`.
+      operationId: finalizar
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcaoMecanico'
+            example:
+              mecanicoId: 22222222-2222-4222-8222-222222222222
+              observacao: Pastilhas trocadas e testadas
+      responses:
+        '200':
+          description: Reparo finalizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoTimeline'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                sagaId: null
+                tipo: EXECUCAO_FINALIZADA
+                statusAnterior: EM_EXECUCAO
+                statusNovo: FINALIZADA
+                mecanicoId: 22222222-2222-4222-8222-222222222222
+                duracaoSegundos: 3
+                observacao: Pastilhas trocadas e testadas
+                traceId: 8ae8e9736733b83766e22124bc829962
+                ocorridoEm: '2026-11-15T11:50:57.121Z'
+        '409':
+          $ref: '#/components/responses/OutroMecanico'
+        '422':
+          description: |
+            A OS não está `EM_EXECUCAO` (`{"message"}`) ou erro de validação
+            (`{"message", "errors"}`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/ErroValidacao'
+              example:
+                message: 'Somente ordens EM_EXECUCAO podem ser finalizadas (status atual: FINALIZADA).'
+        '503':
+          $ref: '#/components/responses/BrokerIndisponivel'
+
+  /execucao/os/{osId}/falhar:
+    post:
+      tags: [Timeline]
+      summary: Informa que o reparo falhou (EM_EXECUCAO → FALHOU) e publica execucao.falhou
+      description: |
+        Grava `EXECUCAO_FALHOU`, libera o mecânico e, se a OS veio pela
+        saga, publica `execucao.falhou` com o `motivo`: é o gatilho da
+        compensação (o orquestrador estorna o pagamento, anula o orçamento e
+        cancela a OS). `FALHOU` é terminal: a OS não volta para a fila.
+      operationId: falhar
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Falha'
+            example:
+              mecanicoId: 22222222-2222-4222-8222-222222222222
+              motivo: Peça com defeito de fábrica; reparo inviável
+      responses:
+        '200':
+          description: Falha registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoTimeline'
+              example:
+                osId: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+                execucaoId: 5c2af970-1468-457b-bacd-738899e241c1
+                sagaId: null
+                tipo: EXECUCAO_FALHOU
+                statusAnterior: EM_EXECUCAO
+                statusNovo: FALHOU
+                mecanicoId: 22222222-2222-4222-8222-222222222222
+                duracaoSegundos: 40
+                observacao: Peça com defeito de fábrica; reparo inviável
+                traceId: 8ae8e9736733b83766e22124bc829962
+                ocorridoEm: '2026-11-15T11:51:30.000Z'
+        '409':
+          $ref: '#/components/responses/OutroMecanico'
+        '422':
+          description: |
+            A OS não está `EM_EXECUCAO` (`{"message"}`) ou erro de validação
+            — `motivo` é obrigatório (`{"message", "errors"}`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - $ref: '#/components/schemas/ErroValidacao'
+              example:
+                message: 'Somente ordens EM_EXECUCAO podem falhar (status atual: FINALIZADA).'
+        '503':
+          $ref: '#/components/responses/BrokerIndisponivel'
+
+  /execucao/metricas/tempo-medio:
+    get:
+      tags: [Métricas]
+      summary: Tempo médio que as OS ficaram em cada status
+      description: |
+        Média de `duracaoSegundos` agrupada por `statusAnterior`, sobre a
+        timeline inteira: `APROVADA` é a espera na fila, `EM_EXECUCAO` é o
+        tempo de reparo. Sem amostras devolve `[]`.
+      operationId: tempoMedio
+      responses:
+        '200':
+          description: Média por status, em ordem alfabética de status.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TempoMedio'
+              example:
+                - status: APROVADA
+                  tempoMedioSegundos: 2
+                  amostras: 1
+                - status: EM_EXECUCAO
+                  tempoMedioSegundos: 3
+                  amostras: 1
+
+components:
+  parameters:
+    OsId:
+      name: osId
+      in: path
+      required: true
+      description: |
+        UUID da OS. A rota tem `whereUuid`: valor que não é UUID nem casa a
+        rota e volta `404` do Laravel (ver `RotaNaoEncontrada`).
+      schema:
+        type: string
+        format: uuid
+      example: 0ef33f24-9e99-4119-befb-9e3b42e8e660
+
+  responses:
+    ErroValidacao:
+      description: Erro de validação.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErroValidacao'
+          example:
+            message: The mecanico id field is required.
+            errors:
+              mecanicoId: [The mecanico id field is required.]
+    OutroMecanico:
+      description: A OS está com outro mecânico.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            message: A OS 0ef33f24-9e99-4119-befb-9e3b42e8e660 está com o mecânico 22222222-2222-4222-8222-222222222222.
+    BrokerIndisponivel:
+      description: |
+        A transição **foi gravada** na timeline (e o mecânico, travado ou
+        liberado), mas o RabbitMQ não aceitou o evento (fora do ar, nack ou
+        sem fila ligada à routing key). Só acontece para OS que veio pela
+        saga. Repetir a chamada não republica: o status já mudou e a resposta
+        passa a ser `422`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+          example:
+            message: A transição foi gravada, mas o evento não foi publicado no broker.
+
+  schemas:
+    StatusExecucao:
+      type: string
+      description: |
+        Etapas da OS que passam por este serviço. `FALHOU` é terminal
+        (reparo que falhou ou execução cancelada pela compensação).
+      enum:
+        - RECEBIDA
+        - EM_DIAGNOSTICO
+        - APROVADA
+        - EM_EXECUCAO
+        - FINALIZADA
+        - FALHOU
+
+    ItemFila:
+      type: object
+      required: [osId, execucaoId, prioridade, posicao, enfileiradaEm]
+      properties:
+        osId:
+          type: string
+          format: uuid
+        execucaoId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Nasce quando a OS entra na fila e acompanha todos os eventos da
+            execução (contrato v1.1, Parte 4).
+        prioridade:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Maior número = mais urgente.
+        posicao:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: 1 = próxima a ser puxada.
+        enfileiradaEm:
+          type: string
+          format: date-time
+          description: UTC, com milissegundos.
+
+    EventoTimeline:
+      type: object
+      required:
+        - osId
+        - execucaoId
+        - sagaId
+        - tipo
+        - statusAnterior
+        - statusNovo
+        - mecanicoId
+        - duracaoSegundos
+        - observacao
+        - traceId
+        - ocorridoEm
+      properties:
+        osId:
+          type: string
+          format: uuid
+        execucaoId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Presente em EXECUCAO_INICIADA, EXECUCAO_FINALIZADA e EXECUCAO_FALHOU.
+        sagaId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Saga de origem; nulo quando a OS foi enfileirada pela API REST.
+        tipo:
+          type: string
+          enum: [DIAGNOSTICO_INICIADO, EXECUCAO_INICIADA, EXECUCAO_FINALIZADA, EXECUCAO_FALHOU, NOTA]
+          description: NOTA é anotação livre e não muda o estado; os demais são transições.
+        statusAnterior:
+          type: string
+          nullable: true
+          description: Um dos valores de StatusExecucao; nulo em NOTA.
+          enum: [RECEBIDA, EM_DIAGNOSTICO, APROVADA, EM_EXECUCAO, FINALIZADA, FALHOU, null]
+        statusNovo:
+          type: string
+          nullable: true
+          description: Um dos valores de StatusExecucao; nulo em NOTA.
+          enum: [RECEBIDA, EM_DIAGNOSTICO, APROVADA, EM_EXECUCAO, FINALIZADA, FALHOU, null]
+        mecanicoId:
+          type: string
+          format: uuid
+          nullable: true
+        duracaoSegundos:
+          type: integer
+          nullable: true
+          description: Tempo que a OS ficou no status anterior.
+        observacao:
+          type: string
+          nullable: true
+          description: Observação da transição, texto da nota ou motivo da falha.
+        traceId:
+          type: string
+          nullable: true
+          description: trace-id (32 hex) do OpenTelemetry; com saga, o do trace distribuído.
+        ocorridoEm:
+          type: string
+          format: date-time
+          description: UTC, com milissegundos.
+
+    TempoMedio:
+      type: object
+      required: [status, tempoMedioSegundos, amostras]
+      properties:
+        status:
+          $ref: '#/components/schemas/StatusExecucao'
+        tempoMedioSegundos:
+          type: number
+          description: Arredondado em 2 casas.
+        amostras:
+          type: integer
+
+    Enfileirar:
+      type: object
+      required: [osId]
+      properties:
+        osId:
+          type: string
+          format: uuid
+        prioridade:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 1
+          description: Maior número = mais urgente.
+
+    AcaoMecanico:
+      type: object
+      required: [mecanicoId]
+      properties:
+        mecanicoId:
+          type: string
+          format: uuid
+        observacao:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: Aceito em diagnóstico e finalizar; ignorado em fila/proxima.
+
+    Nota:
+      type: object
+      required: [mecanicoId, texto]
+      properties:
+        mecanicoId:
+          type: string
+          format: uuid
+        texto:
+          type: string
+          maxLength: 2000
+
+    Falha:
+      type: object
+      required: [mecanicoId, motivo]
+      properties:
+        mecanicoId:
+          type: string
+          format: uuid
+        motivo:
+          type: string
+          maxLength: 1000
+          description: Vai no execucao.falhou; é o que o orquestrador registra ao compensar.
+
+    Erro:
+      type: object
+      description: Erro de negócio, convertido em bootstrap/app.php.
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    RotaNaoEncontrada:
+      type: object
+      description: |
+        404 do próprio Laravel quando o `osId` não é UUID. Com `APP_DEBUG`
+        ligado vem também `exception`, `file`, `line` e `trace`.
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: The route api/execucao/os/abc/timeline could not be found.
+
+    ErroValidacao:
+      type: object
+      description: Formato de erro de validação do Laravel.
+      required: [message, errors]
+      properties:
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string

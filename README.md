@@ -125,6 +125,8 @@ Erros de negócio: `409` (OS já na fila, mecânico ocupado, OS de outro mecâni
 
 > O mecânico vem no corpo da requisição enquanto a autenticação entre serviços não está definida.
 
+Contrato completo, com corpos e erros: `docs/openapi.yaml`. Collection do Postman: `docs/postman/`.
+
 ## Testes
 
 ```bash
@@ -154,6 +156,8 @@ O **teste de contrato** (`tests/Contract`) usa o mesmo `docs/asyncapi.yaml` do O
 | `docs/contrato-eventos-fase4.md` | Contrato v1.1 — **em caso de divergência, ele manda** |
 | `docs/adrs-fase4.md` | ADR-0007 a ADR-0014 |
 | `docs/asyncapi.yaml` | Contrato AsyncAPI dos eventos |
+| `docs/openapi.yaml` | Contrato HTTP (OpenAPI 3.0.3), versionado. O Swagger UI do serviço (`/api/documentation`) é gerado das anotações em `app/Interface/Http/Swagger/` |
+| `docs/postman/oficina-execucao-service.postman_collection.json` | Collection do Postman que segue o `openapi.yaml`, com testes; roda com `npx newman run docs/postman/oficina-execucao-service.postman_collection.json --env-var baseUrl=http://localhost:8080` |
 | `docs/guia-testes-cobertura.md` | Pirâmide de testes e meta de 80% |
 | `oficina-infra-fase4` → `docs/contrato-observabilidade.md` | Tracing e logs: propagação do `traceparent` e formato do log. Vale para os três serviços; este repo é a implementação de referência |
 
